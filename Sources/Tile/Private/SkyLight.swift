@@ -6,7 +6,7 @@ import Foundation
 /// This file is the only place Tile touches private API. Every symbol is resolved
 /// with `dlsym` at first use, so a symbol Apple removes in a future macOS turns
 /// into a thrown error instead of a crash at launch. Everything here is read-only
-/// unless noted, and none of it requires SIP to be disabled.
+/// except the "Writes" section, and none of it requires SIP to be disabled.
 enum SkyLight {
     typealias ConnectionID = Int32
     typealias SpaceID = UInt64
@@ -40,6 +40,13 @@ enum SkyLight {
     private typealias ManagedDisplayGetCurrentSpaceFn = @convention(c) (ConnectionID, CFString) -> SpaceID
     private typealias CopySpacesForWindowsFn = @convention(c) (ConnectionID, Int32, CFArray) -> Unmanaged<CFArray>?
     private typealias AXUIElementGetWindowFn = @convention(c) (AXUIElement, UnsafeMutablePointer<CGWindowID>) -> AXError
+    private typealias MoveWindowsToManagedSpaceFn = @convention(c) (ConnectionID, CFArray, SpaceID) -> Void
+    private typealias WindowsAndSpacesFn = @convention(c) (ConnectionID, CFArray, CFArray) -> Void
+
+    static var screenIsLocked: Bool {
+        let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+        return (session?["CGSSessionScreenIsLocked"] as? Bool) ?? false
+    }
 
     static func mainConnectionID() throws -> ConnectionID {
         try resolve(["SLSMainConnectionID", "CGSMainConnectionID"], as: MainConnectionIDFn.self)()
@@ -81,5 +88,28 @@ enum SkyLight {
         let fn = try resolve(["_AXUIElementGetWindow"], as: AXUIElementGetWindowFn.self)
         var id: CGWindowID = 0
         return fn(element, &id) == .success ? id : nil
+    }
+
+    // MARK: Writes. Experimental: the window server may silently ignore these
+    // from any process other than the Dock. Verify the result, never assume it.
+
+    static func moveWindows(_ ids: [CGWindowID], toManagedSpace space: SpaceID) throws {
+        let fn = try resolve(["SLSMoveWindowsToManagedSpace", "CGSMoveWindowsToManagedSpace"],
+                             as: MoveWindowsToManagedSpaceFn.self)
+        fn(try mainConnectionID(), numbers(ids), space)
+    }
+
+    static func addWindows(_ ids: [CGWindowID], toSpaces spaces: [SpaceID]) throws {
+        let fn = try resolve(["SLSAddWindowsToSpaces", "CGSAddWindowsToSpaces"], as: WindowsAndSpacesFn.self)
+        fn(try mainConnectionID(), numbers(ids), numbers(spaces))
+    }
+
+    static func removeWindows(_ ids: [CGWindowID], fromSpaces spaces: [SpaceID]) throws {
+        let fn = try resolve(["SLSRemoveWindowsFromSpaces", "CGSRemoveWindowsFromSpaces"], as: WindowsAndSpacesFn.self)
+        fn(try mainConnectionID(), numbers(ids), numbers(spaces))
+    }
+
+    private static func numbers<T: BinaryInteger>(_ values: [T]) -> CFArray {
+        values.map { NSNumber(value: UInt64($0)) } as CFArray
     }
 }

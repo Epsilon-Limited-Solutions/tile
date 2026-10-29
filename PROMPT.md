@@ -26,9 +26,14 @@ don't build the tap now.
 
 - macOS 26.2, Apple M3 Pro, Xcode 26.6 at `/Applications/Xcode.app`, Homebrew installed.
   XcodeGen and Tuist are not installed.
-- Displays:
-  - built-in "Color LCD", 3024×1964 Retina, main display
-  - "DELL S2722QC", rotated 270° (portrait), 2880×5120
+- Displays when docked (laptop-only is the built-in alone):
+  - built-in "Built-in Retina Display", 1512×982 points, primary
+  - role `vertical-left`: DELL S2722QC, rotated 270°, left of the laptop, 1440×2560
+    points, serial 810894658
+  - role `vertical-right`: DELL S2722QC, rotated 90°, right of the laptop, 1440×2560
+    points, serial 825446978
+  - The two Dells share a name (macOS appends "(1)"/"(2)", which can swap), so
+    profiles must match them by serial.
 - Signing identity: `Apple Development: Thomas Duquemin (3367SAF32Q)`, the only one
   installed. There's no Developer ID certificate yet.
 
@@ -319,8 +324,9 @@ Bundle ids are examples. I'll edit them.
   "profiles": [
     { "id": "laptop", "displays": { "laptop": { "builtin": true } } },
     { "id": "desk",   "displays": {
-        "laptop":   { "builtin": true },
-        "vertical": { "name": "DELL S2722QC" } },
+        "laptop":         { "builtin": true },
+        "vertical-left":  { "name": "DELL S2722QC", "serial": 810894658 },
+        "vertical-right": { "name": "DELL S2722QC", "serial": 825446978 } },
       "onActivate": null }
   ],
   "layouts": [
@@ -342,12 +348,12 @@ Bundle ids are examples. I'll edit them.
   ],
   "arrangements": [
     { "id": "work", "profile": "desk",
-      "endOn": { "vertical": 1, "laptop": 1 },
+      "endOn": { "vertical-left": 1, "vertical-right": 1, "laptop": 1 },
       "desktops": [
-        { "display": "vertical", "desktop": 1, "windows": [
+        { "display": "vertical-right", "desktop": 1, "windows": [
           { "app": "com.microsoft.VSCode",  "layout": "top-60", "open": ["~/epsilon"] },
           { "app": "com.googlecode.iterm2", "layout": "bottom-40" } ] },
-        { "display": "vertical", "desktop": 2, "windows": [
+        { "display": "vertical-right", "desktop": 2, "windows": [
           { "app": "com.tinyspeck.slackmacgap", "layout": "top-half" },
           { "app": "com.apple.iCal",            "layout": "bottom-half" } ] },
         { "display": "laptop", "desktop": 1, "windows": [

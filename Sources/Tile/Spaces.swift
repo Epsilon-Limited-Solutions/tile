@@ -20,6 +20,13 @@ struct DisplaySpaces {
     let spaces: [SpaceInfo]
 }
 
+/// A specific desktop on a specific display.
+struct DesktopTarget: Equatable {
+    let display: String
+    let space: SkyLight.SpaceID
+    let desktopIndex: Int
+}
+
 /// A window as the window server sees it. Unlike AX, this covers windows on every Space.
 struct ServerWindow {
     let id: CGWindowID
@@ -53,6 +60,76 @@ enum Spaces {
             }
             return DisplaySpaces(displayIdentifier: identifier, currentSpace: current, spaces: spaces)
         }
+    }
+
+    /// Display identifier -> the Space it's showing.
+    static func currentSpaces() -> [String: SkyLight.SpaceID] {
+        let snapshot = (try? snapshot()) ?? []
+        return Dictionary(snapshot.map { ($0.displayIdentifier, $0.currentSpace) }, uniquingKeysWith: { a, _ in a })
+    }
+
+    /// The display and Space a window is on. Nil for windows on no Space, or on several.
+    static func location(ofWindow id: CGWindowID) -> DesktopTarget? {
+        guard let spaces = try? SkyLight.spaces(forWindow: id), spaces.count == 1 else { return nil }
+        for display in (try? snapshot()) ?? [] {
+            if let space = display.spaces.first(where: { $0.id == spaces[0] }) {
+                return DesktopTarget(display: display.displayIdentifier, space: space.id, desktopIndex: space.desktopIndex ?? 0)
+            }
+        }
+        return nil
+    }
+
+    /// Hypothesis under test in the spike: "Switch to Desktop N" numbers user
+    /// desktops 1...N across displays, in SkyLight's display order.
+    static func predictedShortcutNumbers(_ snapshot: [DisplaySpaces]) -> [Int: DesktopTarget] {
+        var result: [Int: DesktopTarget] = [:]
+        var number = 0
+        for display in snapshot {
+            for space in display.spaces {
+                guard let index = space.desktopIndex else { continue }
+                number += 1
+                result[number] = DesktopTarget(display: display.displayIdentifier, space: space.id, desktopIndex: index)
+            }
+        }
+        return result
+    }
+
+    /// Time for the switch animation to finish after SkyLight reports the new Space.
+    static let settleDelay: Duration = .milliseconds(250)
+
+    /// Posts the Desktop N shortcut and waits until `arrived` is true.
+    @MainActor
+    static func switchDesktop(using shortcut: MacSettings.DesktopShortcut, until arrived: () -> Bool) async -> Bool {
+        Events.postKey(shortcut.keyCode, flags: shortcut.flags)
+        let ok = await waitUntil(timeout: .seconds(2), arrived)
+        if ok { try? await Task.sleep(for: settleDelay) }
+        return ok
+    }
+
+    /// Grab point relative to a window's top-left: left of the traffic lights,
+    /// inside the title bar, clear of tabs and the rounded corner.
+    static let defaultGrabOffset = CGPoint(x: 10, y: 14)
+
+    /// Grab and switch: hold the window by its title bar, switch desktops, let go.
+    /// The window rides along. The mouse button is always released and the
+    /// cursor put back, whatever happens in between.
+    @MainActor
+    static func carry(windowFrame frame: CGRect, grabOffset: CGPoint = defaultGrabOffset,
+                      using shortcut: MacSettings.DesktopShortcut, until arrived: () -> Bool) async -> Bool {
+        let original = Events.cursorLocation
+        let grab = CGPoint(x: frame.minX + grabOffset.x, y: frame.minY + grabOffset.y)
+        Events.postMouse(.mouseMoved, at: grab)
+        Events.postMouse(.leftMouseDown, at: grab)
+        defer {
+            Events.postMouse(.leftMouseUp, at: grab)
+            Events.warpCursor(to: original)
+        }
+        Events.postMouse(.leftMouseDragged, at: grab)
+        try? await Task.sleep(for: .milliseconds(50))
+        Events.postKey(shortcut.keyCode, flags: shortcut.flags)
+        let ok = await waitUntil(timeout: .seconds(2), arrived)
+        try? await Task.sleep(for: settleDelay)
+        return ok
     }
 
     private static func spaceID(_ space: [String: Any]) -> SkyLight.SpaceID? {

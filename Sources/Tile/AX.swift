@@ -44,6 +44,23 @@ enum AX {
         return CGRect(origin: point, size: extent)
     }
 
+    @discardableResult
+    static func setPosition(_ window: AXUIElement, _ point: CGPoint) -> AXError {
+        var point = point
+        guard let value = AXValueCreate(.cgPoint, &point) else { return .failure }
+        return AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, value)
+    }
+
+    static func raise(_ window: AXUIElement) {
+        AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+    }
+
+    static func pressCloseButton(_ window: AXUIElement) {
+        guard let button = value(window, kAXCloseButtonAttribute),
+              CFGetTypeID(button) == AXUIElementGetTypeID() else { return }
+        AXUIElementPerformAction(button as! AXUIElement, kAXPressAction as CFString)
+    }
+
     private static func axValue(_ element: AXUIElement, _ attribute: String) -> AXValue? {
         guard let ref = value(element, attribute), CFGetTypeID(ref) == AXValueGetTypeID() else { return nil }
         return (ref as! AXValue)

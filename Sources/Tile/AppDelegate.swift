@@ -37,6 +37,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         switch route {
         case .debug(command: "spaces", params: _):
             SpacesReport.write()
+        case .debug(command: "spike", params: _):
+            Spike.start()
         default:
             Log.app.error("route not implemented yet: \(String(describing: route), privacy: .public)")
             NSSound.beep()
