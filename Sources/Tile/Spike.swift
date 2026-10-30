@@ -183,21 +183,66 @@ final class Spike {
             return
         }
         await show(home.space, on: home.display)
-        await bringToFront(window)
-        guard let frame = AX.frame(of: window.element) else { line("skipped: can't read the test window frame"); return }
-        let cursorBefore = Events.cursorLocation
-
-        let switched = await Spaces.carry(windowFrame: frame, using: otherShortcut) {
-            Spaces.currentSpaces()[home.display] == other
+        guard let start = AX.frame(of: window.element),
+              let close = AX.buttonFrame(window.element, kAXCloseButtonAttribute),
+              let zoom = AX.buttonFrame(window.element, kAXZoomButtonAttribute) else {
+            line("skipped: can't read the test window or its title-bar buttons")
+            return
         }
-        let after = spacesOf(window)
-        let cursorAfter = Events.cursorLocation
-        line("carry Desktop \(homeShortcut.number) -> \(otherShortcut.number): switched=\(switched), "
-             + "window now on \(label(after)): \(after == [other] ? "WORKS" : "FAILED")")
-        line("  grab offset \(Spaces.defaultGrabOffset), mouse released=\(!Events.isLeftMouseDown), "
-             + "cursor restored=\(hypot(cursorBefore.x - cursorAfter.x, cursorBefore.y - cursorAfter.y) < 2)")
-        line("  frame before \(fmt(frame)), after \(AX.frame(of: window.element).map(fmt) ?? "?")")
-        guard after == [other] else { return }
+        // Title-bar geometry relative to the window's top-left, so grab points avoid the buttons.
+        let closeRel = close.offsetBy(dx: -start.minX, dy: -start.minY)
+        let zoomRel = zoom.offsetBy(dx: -start.minX, dy: -start.minY)
+        line("title bar buttons (relative): close \(fmt(closeRel)), zoom \(fmt(zoomRel))")
+        let barY = zoomRel.midY
+        var offsets: [(name: String, offset: CGPoint)] = [
+            ("right of zoom button", Spaces.grabOffset(for: window.element, frame: start)),
+            ("title bar center", CGPoint(x: start.width / 2, y: barY)),
+        ]
+        if closeRel.minX >= 10 {
+            offsets.append(("left of close button", CGPoint(x: closeRel.minX / 2, y: barY)))
+        }
+
+        var carried = false
+        for (name, offset) in offsets {
+            await show(home.space, on: home.display)
+            await bringToFront(window)
+            guard let frame = AX.frame(of: window.element) else {
+                line("can't read the test window frame before '\(name)'; it's on \(label(spacesOf(window)))")
+                return
+            }
+            let cursorBefore = Events.cursorLocation
+            var buttonDown = false
+            var serverWhileHeld: CGRect?
+
+            let switched = await Spaces.carry(windowFrame: frame, grabOffset: offset, using: otherShortcut,
+                                              whileHeld: {
+                                                  buttonDown = Events.isLeftMouseDown
+                                                  serverWhileHeld = serverBounds(window)
+                                              }) {
+                Spaces.currentSpaces()[home.display] == other
+            }
+            let after = spacesOf(window)
+            let cursorAfter = Events.cursorLocation
+            carried = after == [other]
+            line("carry Desktop \(homeShortcut.number) -> \(otherShortcut.number), grab \(name) "
+                 + "(\(Int(offset.x)),\(Int(offset.y))): switched=\(switched), window now on \(label(after)): "
+                 + (carried ? "WORKS" : "FAILED"))
+            line("  while held: button down=\(buttonDown), server bounds \(serverWhileHeld.map(fmt) ?? "?") "
+                 + "vs \(fmt(frame)) before (followed drag=\(serverWhileHeld.map { $0.origin != frame.origin } ?? false))")
+            line("  after: mouse released=\(!Events.isLeftMouseDown), "
+                 + "cursor restored=\(hypot(cursorBefore.x - cursorAfter.x, cursorBefore.y - cursorAfter.y) < 2), "
+                 + "server bounds \(serverBounds(window).map(fmt) ?? "GONE"), raw spaces \(after)")
+            if carried { break }
+            if serverBounds(window) == nil {
+                line("  test window no longer exists (a click hit a title-bar button?); stopping 2b")
+                return
+            }
+        }
+        guard carried else {
+            // Leave the window's desktop showing so the remaining experiments can reach it.
+            await show(home.space, on: home.display)
+            return
+        }
 
         line()
         line("== 4. AX and windows on hidden desktops ==")
@@ -220,7 +265,9 @@ final class Spike {
         line("== 2b. Carry it back ==")
         await bringToFront(window)
         guard let frameBack = AX.frame(of: window.element) else { return }
-        let back = await Spaces.carry(windowFrame: frameBack, using: homeShortcut) {
+        let back = await Spaces.carry(windowFrame: frameBack,
+                                      grabOffset: Spaces.grabOffset(for: window.element, frame: frameBack),
+                                      using: homeShortcut) {
             Spaces.currentSpaces()[home.display] == home.space
         }
         let final = spacesOf(window)
@@ -251,7 +298,10 @@ final class Spike {
         await show(target, on: destination.displayIdentifier)
         line("\(screen.name) showing \(label(Spaces.currentSpaces()[destination.displayIdentifier] ?? 0))")
 
-        guard let original = AX.frame(of: window.element) else { return }
+        guard let original = AX.frame(of: window.element) else {
+            line("skipped: can't read the test window frame (its desktop isn't showing?)")
+            return
+        }
         let primaryMaxY = NSScreen.screens.first?.frame.maxY ?? 0
         let point = CGPoint(x: screen.visibleFrame.minX + 40, y: primaryMaxY - screen.visibleFrame.maxY + 40)
         let error = AX.setPosition(window.element, point)
@@ -401,6 +451,11 @@ final class Spike {
 
     private func axLists(_ window: TestWindow) -> Bool {
         AX.windows(of: AX.application(pid: window.pid)).contains { (try? SkyLight.windowID(of: $0)) == window.id }
+    }
+
+    /// Where the window server has the window (works on hidden desktops too); nil if it's gone.
+    private func serverBounds(_ window: TestWindow) -> CGRect? {
+        Spaces.serverWindows(minimumSize: 0).first { $0.id == window.id }?.bounds
     }
 
     private func spacesOf(_ window: TestWindow) -> [SkyLight.SpaceID] {

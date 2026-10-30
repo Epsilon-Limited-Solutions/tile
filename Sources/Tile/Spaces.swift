@@ -106,26 +106,42 @@ enum Spaces {
         return ok
     }
 
-    /// Grab point relative to a window's top-left: left of the traffic lights,
-    /// inside the title bar, clear of tabs and the rounded corner.
-    static let defaultGrabOffset = CGPoint(x: 10, y: 14)
+    /// Grab point relative to a window's top-left: just right of the zoom button, at
+    /// its vertical center. On macOS 26 the close button spans (8,8)-(24,24), so a
+    /// fixed offset near the corner clicks it; the spike lost two test windows that way.
+    @MainActor
+    static func grabOffset(for window: AXUIElement, frame: CGRect) -> CGPoint {
+        if let zoom = AX.buttonFrame(window, kAXZoomButtonAttribute) {
+            return CGPoint(x: zoom.maxX - frame.minX + 12, y: zoom.midY - frame.minY)
+        }
+        return CGPoint(x: frame.width / 2, y: 12)
+    }
 
     /// Grab and switch: hold the window by its title bar, switch desktops, let go.
     /// The window rides along. The mouse button is always released and the
     /// cursor put back, whatever happens in between.
+    /// `whileHeld` runs after the drag starts and before the switch (diagnostics).
     @MainActor
-    static func carry(windowFrame frame: CGRect, grabOffset: CGPoint = defaultGrabOffset,
-                      using shortcut: MacSettings.DesktopShortcut, until arrived: () -> Bool) async -> Bool {
+    static func carry(windowFrame frame: CGRect, grabOffset: CGPoint,
+                      using shortcut: MacSettings.DesktopShortcut, whileHeld: () -> Void = {},
+                      until arrived: () -> Bool) async -> Bool {
         let original = Events.cursorLocation
-        let grab = CGPoint(x: frame.minX + grabOffset.x, y: frame.minY + grabOffset.y)
-        Events.postMouse(.mouseMoved, at: grab)
-        Events.postMouse(.leftMouseDown, at: grab)
+        var held = CGPoint(x: frame.minX + grabOffset.x, y: frame.minY + grabOffset.y)
+        Events.postMouse(.mouseMoved, at: held)
+        Events.postMouse(.leftMouseDown, at: held)
         defer {
-            Events.postMouse(.leftMouseUp, at: grab)
+            Events.postMouse(.leftMouseUp, at: held)
             Events.warpCursor(to: original)
         }
-        Events.postMouse(.leftMouseDragged, at: grab)
-        try? await Task.sleep(for: .milliseconds(50))
+        // Move past the drag threshold so the window server starts a window drag;
+        // a drag event with no movement doesn't start one.
+        for _ in 1...3 {
+            try? await Task.sleep(for: .milliseconds(15))
+            held.x += 2
+            Events.postMouse(.leftMouseDragged, at: held, delta: CGPoint(x: 2, y: 0))
+        }
+        try? await Task.sleep(for: .milliseconds(80))
+        whileHeld()
         Events.postKey(shortcut.keyCode, flags: shortcut.flags)
         let ok = await waitUntil(timeout: .seconds(2), arrived)
         try? await Task.sleep(for: settleDelay)

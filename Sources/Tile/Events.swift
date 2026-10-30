@@ -15,11 +15,16 @@ enum Events {
         }
     }
 
-    /// `point` is in global coordinates, top-left origin (same as AX).
-    static func postMouse(_ type: CGEventType, at point: CGPoint) {
-        let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: .left)
-        event?.flags = []
-        event?.post(tap: .cghidEventTap)
+    /// `point` is in global coordinates, top-left origin (same as AX). `delta` is the
+    /// movement since the previous event; window dragging reads it, not the position.
+    static func postMouse(_ type: CGEventType, at point: CGPoint, delta: CGPoint = .zero) {
+        guard let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: .left)
+        else { return }
+        event.flags = []
+        event.setIntegerValueField(.mouseEventClickState, value: 1)
+        event.setIntegerValueField(.mouseEventDeltaX, value: Int64(delta.x))
+        event.setIntegerValueField(.mouseEventDeltaY, value: Int64(delta.y))
+        event.post(tap: .cghidEventTap)
     }
 
     static var cursorLocation: CGPoint {

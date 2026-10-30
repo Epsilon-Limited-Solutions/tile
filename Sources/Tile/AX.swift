@@ -55,6 +55,12 @@ enum AX {
         AXUIElementPerformAction(window, kAXRaiseAction as CFString)
     }
 
+    /// Frame of a title-bar button (`kAXCloseButtonAttribute`, `kAXZoomButtonAttribute`, ...), AX coordinates.
+    static func buttonFrame(_ window: AXUIElement, _ attribute: String) -> CGRect? {
+        guard let button = value(window, attribute), CFGetTypeID(button) == AXUIElementGetTypeID() else { return nil }
+        return frame(of: button as! AXUIElement)
+    }
+
     static func pressCloseButton(_ window: AXUIElement) {
         guard let button = value(window, kAXCloseButtonAttribute),
               CFGetTypeID(button) == AXUIElementGetTypeID() else { return }
