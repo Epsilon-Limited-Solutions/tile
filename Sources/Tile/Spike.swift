@@ -354,6 +354,8 @@ final class Spike {
     }
 
     private func restoreStartingDesktops() async {
+        // Nothing was switched if the run aborted before recording where it started.
+        guard !startSpaces.isEmpty else { return }
         for (display, space) in startSpaces where Spaces.currentSpaces()[display] != space {
             await show(space, on: display)
         }
