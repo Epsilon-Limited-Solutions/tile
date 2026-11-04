@@ -283,8 +283,8 @@ private struct BindingsTab: View {
                     HStack {
                         Text("\(index + 1)").foregroundStyle(.secondary).frame(width: 24, alignment: .trailing)
                         ShortcutRecorder(model: model, binding: $binding).frame(width: 170)
-                        WhenMenu(model: model, when: $binding.when).frame(width: 190)
-                        TargetMenu(model: model, target: $binding.target).frame(width: 200)
+                        WhenMenu(model: model, when: $binding.when).frame(width: 190, alignment: .leading)
+                        TargetMenu(model: model, target: $binding.target).frame(width: 240, alignment: .leading)
                         if let status = model.status(of: binding) {
                             Text(status).foregroundStyle(.red).font(.caption)
                         }

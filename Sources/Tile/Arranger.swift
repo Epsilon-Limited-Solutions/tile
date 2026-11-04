@@ -357,13 +357,25 @@ private final class Run {
         guard let id = window.id else { return .failed("lost track of its window") }
         let target = frame(shape, on: screen, size: size)
         guard let took = await WindowMover.setFrame(window, to: target) else { return .failed("can't read its frame") }
-        let now = (try? SkyLight.spaces(forWindow: id)) ?? []
+        let now = await spaces(of: id, settlingOn: space)
         guard now == [space] else { return .failed("it ended up on \(label(now)), not \(label([space]))") }
         arranger.settled[id] = (target, took)
         if !took.isClose(to: target, within: WindowMover.tolerance) {
             line("  asked for \(fmt(target)), it took \(fmt(took))")
         }
         return .placed
+    }
+
+    /// The window's desktops, waiting up to a second for them to become `[space]`: after
+    /// a move onto another display the window server reports the old desktop for a few
+    /// hundred milliseconds.
+    private func spaces(of id: CGWindowID, settlingOn space: SkyLight.SpaceID) async -> [SkyLight.SpaceID] {
+        let deadline = ContinuousClock.now + .seconds(1)
+        while true {
+            let now = (try? SkyLight.spaces(forWindow: id)) ?? []
+            if now == [space] || ContinuousClock.now >= deadline { return now }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
     }
 
     // MARK: Moving between desktops
@@ -386,7 +398,8 @@ private final class Run {
         let frame = CGRect(x: (visible.midX - size.width / 2).rounded(), y: (visible.midY - size.height / 2).rounded(),
                            width: size.width, height: size.height)
         _ = await WindowMover.setFrame(window, to: frame)
-        let parked = (try? SkyLight.spaces(forWindow: id)) == [Spaces.currentSpaces()[screen.identifier] ?? 0]
+        let showing = Spaces.currentSpaces()[screen.identifier] ?? 0
+        let parked = await spaces(of: id, settlingOn: showing) == [showing]
         line("  parked on \(screen.info.name): \(parked ? "ok" : "didn't take, carrying instead")")
         return parked
     }
@@ -404,7 +417,8 @@ private final class Run {
         let switched = await Spaces.carry(windowFrame: frame, grabOffset: offset, using: shortcut) {
             Spaces.currentSpaces()[screen.identifier] == space
         }
-        let landed = window.id.flatMap { try? SkyLight.spaces(forWindow: $0) } == [space]
+        var landed = false
+        if let id = window.id { landed = await spaces(of: id, settlingOn: space) == [space] }
         line("  carried with Desktop \(number), grabbing at (\(Int(offset.x)),\(Int(offset.y))): \(landed ? "ok" : switched ? "the desktop switched without it" : "the switch timed out")")
         return landed
     }
