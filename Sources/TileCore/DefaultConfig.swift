@@ -1,4 +1,13 @@
+import Foundation
+
 extension Config {
+    /// The default config, parsed. The tests guarantee it's valid; if it somehow
+    /// weren't, Tile would run with nothing configured rather than crash.
+    public static var defaults: Config {
+        (try? parse(Data(defaultJSON.utf8)))
+            ?? Config(gaps: Gaps(), ignoredApps: [], profiles: [], layouts: [], bindings: [], arrangements: [])
+    }
+
     /// Written to ~/.config/tile/config.json on first launch. Hand-formatted, because
     /// it's the file the user edits. Thirds use grids so they divide exactly.
     public static let defaultJSON = #"""

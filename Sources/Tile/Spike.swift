@@ -11,14 +11,9 @@ import TileCore
 @MainActor
 final class Spike {
     static let reportName = "spike.txt"
-    private static let testFile = FileManager.default.temporaryDirectory.appending(path: "tile-spike.txt")
     private static var isRunning = false
 
-    private struct TestWindow {
-        let element: AXUIElement
-        let id: CGWindowID
-        let pid: pid_t
-    }
+    private typealias TestWindow = TestDocument
 
     private var report = ""
     private var displays: [DisplayInfo] = []
@@ -71,13 +66,12 @@ final class Spike {
         await experimentSwitching(Spaces.predictedShortcutNumbers(snapshot))
         guard !observed.isEmpty else { line("ABORT: no desktop switch worked; nothing else can be tested"); return }
 
-        let textEditWasRunning = isRunning("com.apple.TextEdit")
         guard let window = await openTestWindow() else { line("ABORT: TextEdit test window never appeared"); return }
         await experimentPrivateMove(window)
         await experimentCarry(window)
         await experimentCrossDisplay(window)
         await experimentLaunchInPlace(window)
-        closeTestWindow(window, quitTextEdit: !textEditWasRunning)
+        window.close()
     }
 
     // MARK: 1. Switching
@@ -363,45 +357,14 @@ final class Spike {
     private func openTestWindow() async -> TestWindow? {
         line()
         line("== test window ==")
-        try? "Tile spike test window. Safe to close.\n".write(to: Self.testFile, atomically: true, encoding: .utf8)
-        guard let textEdit = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.TextEdit") else {
-            return nil
-        }
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
         do {
-            _ = try await NSWorkspace.shared.open([Self.testFile], withApplicationAt: textEdit, configuration: configuration)
+            let window = try await TestDocument.open(named: "tile-spike", text: "Tile spike test window. Safe to close.\n")
+            line("TextEdit window \(window.id) opened on \(label(spacesOf(window)))")
+            return window
         } catch {
-            line("opening the test file failed: \(error)")
+            line("\(error)")
             return nil
         }
-        var found: TestWindow?
-        _ = await waitUntil(timeout: .seconds(10)) {
-            guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.TextEdit").first else {
-                return false
-            }
-            for element in AX.windows(of: AX.application(pid: app.processIdentifier))
-            where (AX.string(element, kAXTitleAttribute) ?? "").hasPrefix("tile-spike") {
-                if let id = try? SkyLight.windowID(of: element) {
-                    found = TestWindow(element: element, id: id, pid: app.processIdentifier)
-                    return true
-                }
-            }
-            return false
-        }
-        if let found {
-            line("TextEdit window \(found.id) opened on \(label(spacesOf(found)))")
-        }
-        return found
-    }
-
-    private func closeTestWindow(_ window: TestWindow, quitTextEdit: Bool) {
-        if quitTextEdit, let app = NSRunningApplication(processIdentifier: window.pid) {
-            app.terminate()
-        } else {
-            AX.pressCloseButton(window.element)
-        }
-        try? FileManager.default.removeItem(at: Self.testFile)
     }
 
     private func restoreStartingDesktops() async {

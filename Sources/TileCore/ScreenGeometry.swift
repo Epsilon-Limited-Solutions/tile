@@ -88,7 +88,7 @@ extension CGRect {
     }
 
     /// Same position and size within `tolerance` points.
-    func isClose(to other: CGRect, within tolerance: CGFloat) -> Bool {
+    public func isClose(to other: CGRect, within tolerance: CGFloat) -> Bool {
         abs(minX - other.minX) <= tolerance && abs(minY - other.minY) <= tolerance
             && abs(width - other.width) <= tolerance && abs(height - other.height) <= tolerance
     }

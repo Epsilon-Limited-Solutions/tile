@@ -5,6 +5,8 @@ import TileCore
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let permission = AccessibilityPermission()
+    private let configStore = ConfigStore()
+    private lazy var commands = WindowCommands(configStore: configStore)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -13,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         statusItem.menu = menu
 
+        configStore.load()
         permission.requestIfNeeded()
         Log.app.info("Tile launched")
     }
@@ -35,6 +38,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         switch route {
+        case .apply(let layout):
+            Task { await commands.apply(layoutID: layout) }
+        case .action(let name):
+            guard let action = WindowAction(rawValue: name) else {
+                Log.app.error("unknown action '\(name, privacy: .public)'")
+                NSSound.beep()
+                return
+            }
+            Task { await commands.perform(action) }
+        case .selftest:
+            SelfTest.start(configStore: configStore, commands: commands)
         case .debug(command: "spaces", params: _):
             SpacesReport.write()
         case .debug(command: "spike", params: _):
@@ -58,8 +72,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for check in MacSettings.checks() where !check.ok {
             menu.addItem(disabled("Needs fix: \(check.name) (\(check.detail))"))
         }
+        if let error = configStore.lastError {
+            menu.addItem(disabled("Config error, using the last good config:"))
+            for issue in error.split(separator: "\n") { menu.addItem(disabled("  \(issue)")) }
+        }
 
         menu.addItem(.separator())
+        menu.addItem(item("Run Selftest", #selector(runSelftest)))
         menu.addItem(item("Dump Spaces Report", #selector(dumpSpaces)))
         menu.addItem(item("Open Logs Folder", #selector(openLogs)))
         menu.addItem(.separator())
@@ -80,6 +99,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openAccessibilitySettings() {
         permission.openSettings()
+    }
+
+    @objc private func runSelftest() {
+        SelfTest.start(configStore: configStore, commands: commands)
     }
 
     @objc private func dumpSpaces() {

@@ -29,6 +29,12 @@ enum AX {
         (value(element, attribute) as? NSNumber)?.boolValue
     }
 
+    /// An attribute whose value is another element (focused window, a title-bar button, ...).
+    static func element(_ element: AXUIElement, _ attribute: String) -> AXUIElement? {
+        guard let ref = value(element, attribute), CFGetTypeID(ref) == AXUIElementGetTypeID() else { return nil }
+        return (ref as! AXUIElement)
+    }
+
     static func windows(of app: AXUIElement) -> [AXUIElement] {
         (value(app, kAXWindowsAttribute) as? [AXUIElement]) ?? []
     }
@@ -51,20 +57,30 @@ enum AX {
         return AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, value)
     }
 
+    @discardableResult
+    static func setSize(_ window: AXUIElement, _ size: CGSize) -> AXError {
+        var size = size
+        guard let value = AXValueCreate(.cgSize, &size) else { return .failure }
+        return AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, value)
+    }
+
+    @discardableResult
+    static func setBool(_ element: AXUIElement, _ attribute: String, _ value: Bool) -> AXError {
+        AXUIElementSetAttributeValue(element, attribute as CFString, (value ? kCFBooleanTrue : kCFBooleanFalse) as CFTypeRef)
+    }
+
     static func raise(_ window: AXUIElement) {
         AXUIElementPerformAction(window, kAXRaiseAction as CFString)
     }
 
     /// Frame of a title-bar button (`kAXCloseButtonAttribute`, `kAXZoomButtonAttribute`, ...), AX coordinates.
     static func buttonFrame(_ window: AXUIElement, _ attribute: String) -> CGRect? {
-        guard let button = value(window, attribute), CFGetTypeID(button) == AXUIElementGetTypeID() else { return nil }
-        return frame(of: button as! AXUIElement)
+        element(window, attribute).flatMap(frame(of:))
     }
 
     static func pressCloseButton(_ window: AXUIElement) {
-        guard let button = value(window, kAXCloseButtonAttribute),
-              CFGetTypeID(button) == AXUIElementGetTypeID() else { return }
-        AXUIElementPerformAction(button as! AXUIElement, kAXPressAction as CFString)
+        guard let button = element(window, kAXCloseButtonAttribute) else { return }
+        AXUIElementPerformAction(button, kAXPressAction as CFString)
     }
 
     private static func axValue(_ element: AXUIElement, _ attribute: String) -> AXValue? {
