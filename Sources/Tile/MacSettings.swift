@@ -20,7 +20,7 @@ enum MacSettings {
 
     /// Nil when the shortcut is disabled or not configured.
     static func desktopShortcut(_ number: Int) -> DesktopShortcut? {
-        guard desktopShortcutsChecked.contains(number),
+        guard desktopShortcutNumbers.contains(number),
               let entry = symbolicHotkeys()[String(switchToDesktopBaseID + number - 1)] as? [String: Any],
               (entry["enabled"] as? Bool) == true,
               let parameters = (entry["value"] as? [String: Any])?["parameters"] as? [NSNumber],
@@ -41,12 +41,26 @@ enum MacSettings {
         value("AppleSymbolicHotKeys", "com.apple.symbolichotkeys") as? [String: Any] ?? [:]
     }
 
-    /// `Switch to Desktop N` shortcuts live in com.apple.symbolichotkeys under ids 118...
+    /// `Switch to Desktop N` shortcuts live in com.apple.symbolichotkeys under ids
+    /// 118 + N - 1 (verified for 1 to 10 on macOS 26.2).
     static let switchToDesktopBaseID = 118
-    static let desktopShortcutsChecked = 1...9
+    /// macOS offers the shortcut for Desktops 1 to 16.
+    static let desktopShortcutNumbers = 1...16
 
     static func checks() -> [Check] {
         [rearrangeSpaces(), separateSpaces()] + desktopShortcuts()
+    }
+
+    /// The settings without which desktop indices don't mean anything.
+    static func missionControlChecks() -> [Check] {
+        [rearrangeSpaces(), separateSpaces()]
+    }
+
+    /// Bundle ids (lowercased, as the Dock stores them) assigned to a desktop or to all
+    /// desktops through the Dock icon's Options > Assign To.
+    static func dockAssignedApps() -> Set<String> {
+        let bindings = value("app-bindings", "com.apple.spaces") as? [String: Any] ?? [:]
+        return Set(bindings.keys.map { $0.lowercased() })
     }
 
     private static func value(_ key: String, _ domain: String) -> Any? {
@@ -73,9 +87,12 @@ enum MacSettings {
             fix: "System Settings > Desktop & Dock > Mission Control > Displays have separate Spaces (then log out)")
     }
 
+    /// One check per desktop that exists (all displays together), up to 16.
     private static func desktopShortcuts() -> [Check] {
         let hotkeys = symbolicHotkeys()
-        return desktopShortcutsChecked.map { n in
+        let desktops = ((try? Spaces.snapshot()) ?? []).reduce(0) { $0 + $1.spaces.filter { $0.desktopIndex != nil }.count }
+        let numbers = 1...min(max(desktops, 1), desktopShortcutNumbers.upperBound)
+        return numbers.map { n in
             let entry = hotkeys[String(switchToDesktopBaseID + n - 1)] as? [String: Any]
             let enabled = (entry?["enabled"] as? Bool) ?? false
             return Check(

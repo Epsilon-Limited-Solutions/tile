@@ -166,13 +166,21 @@ extension ConfigIssue {
 
 extension Config: Decodable {
     public init(from decoder: Decoder) throws {
-        let c = try decoder.object(allowing: ["gaps", "ignoredApps", "profiles", "layouts", "bindings", "arrangements"])
+        let c = try decoder.object(allowing: ["gaps", "ignoredApps", "profiles", "layouts", "bindings", "arrangements", "grab"])
         gaps = try c.decodeIfPresent(Gaps.self, forKey: "gaps") ?? Gaps()
         ignoredApps = try c.decodeIfPresent([String].self, forKey: "ignoredApps") ?? []
         profiles = try c.decodeIfPresent([DisplayProfile].self, forKey: "profiles") ?? []
         layouts = try c.decodeIfPresent([WindowLayout].self, forKey: "layouts") ?? []
         bindings = try c.decodeIfPresent([KeyBinding].self, forKey: "bindings") ?? []
         arrangements = try c.decodeIfPresent([Arrangement].self, forKey: "arrangements") ?? []
+        var grab: [String: CGPoint] = [:]
+        for (app, offset) in try c.decodeIfPresent([String: [Double]].self, forKey: "grab") ?? [:] {
+            guard offset.count == 2, offset.allSatisfy({ $0 >= 0 }) else {
+                throw c.invalid("grab", "'\(app)' needs [x, y]: points from the window's top-left corner")
+            }
+            grab[app] = CGPoint(x: offset[0], y: offset[1])
+        }
+        self.grab = grab
     }
 }
 

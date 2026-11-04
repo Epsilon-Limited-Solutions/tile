@@ -5,7 +5,7 @@ extension Config {
     /// weren't, Tile would run with nothing configured rather than crash.
     public static var defaults: Config {
         (try? parse(Data(defaultJSON.utf8)))
-            ?? Config(gaps: Gaps(), ignoredApps: [], profiles: [], layouts: [], bindings: [], arrangements: [])
+            ?? Config()
     }
 
     /// Written to ~/.config/tile/config.json on first launch. Hand-formatted, because

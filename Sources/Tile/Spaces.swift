@@ -118,6 +118,36 @@ enum Spaces {
         return CGPoint(x: frame.width / 2, y: 12)
     }
 
+    /// A grab point on the title bar that hits nothing clickable. Scans right from the
+    /// zoom button, hit-testing through AX, for a spot whose element has no press-like
+    /// action and takes no typing. Chrome-style title bars are full of tabs, and a
+    /// mouse-down on a tab tears it off. Falls back to `grabOffset`. The window has to
+    /// be frontmost, since hit-testing finds whatever is on top.
+    @MainActor
+    static func safeGrabOffset(for window: AXUIElement, pid: pid_t, frame: CGRect) -> CGPoint {
+        let fallback = grabOffset(for: window, frame: frame)
+        let system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, AX.messagingTimeout)
+        for x in stride(from: frame.minX + fallback.x, to: frame.maxX - 40, by: 24) {
+            var hit: AXUIElement?
+            guard AXUIElementCopyElementAtPosition(system, Float(x), Float(frame.minY + fallback.y), &hit) == .success,
+                  let hit else { continue }
+            var owner: pid_t = 0
+            guard AXUIElementGetPid(hit, &owner) == .success, owner == pid else { continue }
+            var names: CFArray?
+            AXUIElementCopyActionNames(hit, &names)
+            let actions = Set((names as? [String]) ?? [])
+            let role = AX.string(hit, kAXRoleAttribute) ?? ""
+            if actions.isDisjoint(with: clickActions), !typingRoles.contains(role) {
+                return CGPoint(x: x - frame.minX, y: fallback.y)
+            }
+        }
+        return fallback
+    }
+
+    private static let clickActions: Set<String> = [kAXPressAction, kAXConfirmAction, kAXPickAction, kAXIncrementAction]
+    private static let typingRoles: Set<String> = [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole, kAXSliderRole]
+
     /// Grab and switch: hold the window by its title bar, switch desktops, let go.
     /// The window rides along. The mouse button is always released and the
     /// cursor put back, whatever happens in between.

@@ -15,6 +15,10 @@ final class HotkeyManager {
     private var combosByID: [UInt32: KeyCombo] = [:]
     private var handlerRef: EventHandlerRef?
     private let onPress: (KeyCombo) -> Void
+    /// Bare Esc, held only while an arrangement runs so it can be cancelled.
+    private var escapeRef: EventHotKeyRef?
+    private var onEscape: (() -> Void)?
+    private static let escapeID: UInt32 = 0xE5C
     private static let signature = OSType(0x5449_4C45) // "TILE"
 
     init(onPress: @escaping (KeyCombo) -> Void) {
@@ -60,8 +64,33 @@ final class HotkeyManager {
         Log.app.info("registered \(self.hotKeyRefs.count) hotkeys, \(self.unavailable.count) unavailable")
     }
 
+    /// Takes Esc system-wide until `releaseEscape()`. Other apps don't see Esc meanwhile.
+    func holdEscape(_ handler: @escaping () -> Void) {
+        releaseEscape()
+        var ref: EventHotKeyRef?
+        let id = EventHotKeyID(signature: Self.signature, id: Self.escapeID)
+        let status = RegisterEventHotKey(UInt32(kVK_Escape), 0, id, GetApplicationEventTarget(), 0, &ref)
+        guard status == noErr, let ref else {
+            Log.app.error("couldn't take Esc (\(status)); the arrangement can't be cancelled")
+            return
+        }
+        escapeRef = ref
+        onEscape = handler
+    }
+
+    func releaseEscape() {
+        if let escapeRef { UnregisterEventHotKey(escapeRef) }
+        escapeRef = nil
+        onEscape = nil
+    }
+
     private func pressed(_ id: EventHotKeyID) {
-        guard id.signature == Self.signature, let combo = combosByID[id.id] else { return }
+        guard id.signature == Self.signature else { return }
+        if id.id == Self.escapeID {
+            onEscape?()
+            return
+        }
+        guard let combo = combosByID[id.id] else { return }
         onPress(combo)
     }
 }

@@ -29,4 +29,32 @@ final class ConfigStore {
             Log.app.error("config not loaded, keeping the last good one: \(String(describing: error), privacy: .public)")
         }
     }
+
+    struct WriteError: Error, CustomStringConvertible {
+        let description: String
+    }
+
+    /// Rewrites one top-level section of the file (Capture, Settings) and leaves the
+    /// rest of the text as the user wrote it. `section` gets the config as it is on
+    /// disk and returns the section's new JSON. Refuses if the file has errors now or
+    /// the result wouldn't load. The watcher sees the write and reloads.
+    func replaceSection(_ key: String, with section: (Config) throws -> String) throws {
+        // Through a symlink (dotfiles), so the write doesn't replace the link with a file.
+        let url = Self.url.resolvingSymlinksInPath()
+        let text = try String(contentsOf: url, encoding: .utf8)
+        let current: Config
+        do {
+            current = try Config.parse(Data(text.utf8))
+        } catch {
+            throw WriteError(description: "config.json has errors; fix them first:\n\(error)")
+        }
+        let updated = try ConfigText.replacingValue(of: key, with: try section(current), in: text)
+        do {
+            _ = try Config.parse(Data(updated.utf8))
+        } catch {
+            throw WriteError(description: "the new \(key) wouldn't load, so nothing was written:\n\(error)")
+        }
+        try updated.write(to: url, atomically: true, encoding: .utf8)
+        Log.app.info("rewrote \(key, privacy: .public) in \(url.path, privacy: .public)")
+    }
 }

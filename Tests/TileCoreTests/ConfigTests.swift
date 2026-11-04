@@ -23,7 +23,7 @@ struct ConfigTests {
 
     @Test func emptyObjectIsAValidConfig() throws {
         let config = try Fixtures.config("{}")
-        #expect(config == Config(gaps: Gaps(), ignoredApps: [], profiles: [], layouts: [], bindings: [], arrangements: []))
+        #expect(config == Config())
     }
 
     @Test func arrangementsParse() throws {
@@ -98,7 +98,7 @@ struct ConfigTests {
         #expect(issues(#"{ "bindings": [ { "keys": "ctrl+opt+a", "layuot": "full" } ] }"#)
                 == ["bindings[0].layuot: unknown key; expected keys, when, layout, cycle, action or arrange"])
         #expect(issues(#"{ "gap": {} }"#)
-                == ["gap: unknown key; expected gaps, ignoredApps, profiles, layouts, bindings or arrangements"])
+                == ["gap: unknown key; expected gaps, ignoredApps, profiles, layouts, bindings, arrangements or grab"])
         #expect(issues(#"{ "profiles": [ { "id": "p", "displays": { "x": { "serail": 1 } } } ] }"#)
                 == ["profiles[0].displays.x.serail: unknown key; expected builtin, name, serial or rotation"])
     }
@@ -263,5 +263,13 @@ struct ConfigTests {
         #expect(result == ["bindings[0].layout: no layout has id 'x'",
                            "bindings[1].layout: no layout has id 'y'",
                            "arrangements[0].profile: no profile has id 'z'"])
+    }
+}
+
+struct GrabOffsetTests {
+    @Test func grabOffsetsParse() throws {
+        let config = try Fixtures.config(#"{ "grab": { "com.google.Chrome": [400, 6] } }"#)
+        #expect(config.grab == ["com.google.Chrome": CGPoint(x: 400, y: 6)])
+        #expect(Fixtures.issues(#"{ "grab": { "x": [1] } }"#) == ["grab: 'x' needs [x, y]: points from the window's top-left corner"])
     }
 }

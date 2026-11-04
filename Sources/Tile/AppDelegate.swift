@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         runArrangement(id)
     }
     private lazy var hotkeys = HotkeyManager { [unowned self] combo in commands.press(combo) }
+    private lazy var arranger = Arranger(configStore: configStore, profiles: profiles, hotkeys: hotkeys)
     private var watcher: ConfigWatcher?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -38,8 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func runArrangement(_ id: String) {
-        Log.app.info("arrangements aren't built yet (step 7): '\(id, privacy: .public)'")
-        NSSound.beep()
+        arranger.run(id)
     }
 
     // MARK: URL scheme
@@ -69,6 +69,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return
             }
             Task { await commands.perform(action) }
+        case .arrange(let id):
+            runArrangement(id)
+        case .capture(let name):
+            Capture.run(named: name, configStore: configStore, profiles: profiles)
         case .profile(let id):
             profiles.setOverride(id)
         case .selftest:
@@ -77,6 +81,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             SpacesReport.write()
         case .debug(command: "spike", params: _):
             Spike.start()
+        case .debug(command: "arrangetest", params: _):
+            ArrangeTest.start(arranger: arranger, configStore: configStore, profiles: profiles)
         default:
             Log.app.error("route not implemented yet: \(String(describing: route), privacy: .public)")
             NSSound.beep()
@@ -106,6 +112,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
+        menu.addItem(arrangementsItem())
+        menu.addItem(item("Capture Current Desktops into Arrangement…", #selector(capture)))
+        menu.addItem(.separator())
         menu.addItem(profileItem())
         menu.addItem(item("Copy Current Displays as Profile JSON", #selector(copyProfileJSON)))
 
@@ -118,6 +127,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item("Open Logs Folder", #selector(openLogs)))
         menu.addItem(.separator())
         menu.addItem(item("Quit Tile", #selector(NSApplication.terminate(_:)), key: "q"))
+    }
+
+    /// Each arrangement; the ones for another profile say which.
+    private func arrangementsItem() -> NSMenuItem {
+        let parent = NSMenuItem(title: "Arrangements", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        let current = profiles.match(DisplayInfo.all())?.profile.id
+        for arrangement in configStore.config.arrangements {
+            let suffix = arrangement.profile == current ? "" : " (\(arrangement.profile))"
+            let entry = item(arrangement.id + suffix, #selector(runArrangementFromMenu(_:)))
+            entry.representedObject = arrangement.id
+            submenu.addItem(entry)
+        }
+        if submenu.items.isEmpty { submenu.addItem(disabled("None yet: capture one, or add it to config.json")) }
+        parent.submenu = submenu
+        return parent
     }
 
     /// "Profile: desk", with a submenu to pick one by hand.
@@ -157,6 +182,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openAccessibilitySettings() {
         permission.openSettings()
+    }
+
+    @objc private func runArrangementFromMenu(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        runArrangement(id)
+    }
+
+    @objc private func capture() {
+        Capture.ask(configStore: configStore, profiles: profiles)
     }
 
     @objc private func pickProfile(_ sender: NSMenuItem) {

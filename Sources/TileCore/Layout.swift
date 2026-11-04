@@ -6,6 +6,12 @@ public struct WindowLayout: Equatable, Sendable {
     public let name: String
     public let shape: Shape
 
+    public init(id: String, name: String, shape: Shape) {
+        self.id = id
+        self.name = name
+        self.shape = shape
+    }
+
     public enum Shape: Equatable, Sendable {
         /// x, y, width, height as fractions (0-1).
         case rect(CGRect)
@@ -36,6 +42,13 @@ public struct GridCell: Equatable, Sendable {
     public let row: Int
     public let columnSpan: Int
     public let rowSpan: Int
+
+    public init(column: Int, row: Int, columnSpan: Int, rowSpan: Int) {
+        self.column = column
+        self.row = row
+        self.columnSpan = columnSpan
+        self.rowSpan = rowSpan
+    }
 }
 
 /// Space between windows and around the screen edge, in points.

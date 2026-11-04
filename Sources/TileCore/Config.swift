@@ -10,6 +10,22 @@ public struct Config: Equatable, Sendable {
     public var layouts: [WindowLayout]
     public var bindings: [KeyBinding]
     public var arrangements: [Arrangement]
+    /// Bundle id -> where to hold its windows' title bar when carrying them to another
+    /// desktop, as an offset from the window's top-left. For apps whose title bar is
+    /// mostly tabs or buttons, where Tile's own pick would grab the wrong thing.
+    public var grab: [String: CGPoint]
+
+    public init(gaps: Gaps = Gaps(), ignoredApps: [String] = [], profiles: [DisplayProfile] = [],
+                layouts: [WindowLayout] = [], bindings: [KeyBinding] = [], arrangements: [Arrangement] = [],
+                grab: [String: CGPoint] = [:]) {
+        self.gaps = gaps
+        self.ignoredApps = ignoredApps
+        self.profiles = profiles
+        self.layouts = layouts
+        self.bindings = bindings
+        self.arrangements = arrangements
+        self.grab = grab
+    }
 
     /// Decodes and validates. Throws `ConfigError` listing what's wrong, with the
     /// path of each problem (`bindings[3].layout`) and, for syntax errors, the line.
@@ -68,6 +84,12 @@ public struct KeyBinding: Equatable, Sendable {
     public let when: Condition
     public let target: Target
 
+    public init(keys: KeyCombo, when: Condition = Condition(), target: Target) {
+        self.keys = keys
+        self.when = when
+        self.target = target
+    }
+
     public enum Target: Equatable, Sendable {
         case layout(String)
         /// Repeated presses step through these layout ids.
@@ -105,6 +127,13 @@ public struct Arrangement: Equatable, Sendable {
     public let endOn: [String: Int]
     public let desktops: [DesktopPlacement]
 
+    public init(id: String, profile: String, endOn: [String: Int] = [:], desktops: [DesktopPlacement]) {
+        self.id = id
+        self.profile = profile
+        self.endOn = endOn
+        self.desktops = desktops
+    }
+
     /// Role -> how many desktops that display needs for this arrangement to run.
     public var desktopsNeeded: [String: Int] {
         var needed: [String: Int] = [:]
@@ -124,6 +153,12 @@ public struct DesktopPlacement: Equatable, Sendable {
     /// 1-based, among that display's desktops in Mission Control order.
     public let desktop: Int
     public let windows: [WindowPlacement]
+
+    public init(display: String, desktop: Int, windows: [WindowPlacement]) {
+        self.display = display
+        self.desktop = desktop
+        self.windows = windows
+    }
 }
 
 public struct WindowPlacement: Equatable, Sendable {
@@ -134,6 +169,13 @@ public struct WindowPlacement: Equatable, Sendable {
     public let layout: LayoutRef
     /// Paths or URLs to open with the app.
     public let open: [String]
+
+    public init(app: String, title: String? = nil, layout: LayoutRef, open: [String] = []) {
+        self.app = app
+        self.title = title
+        self.layout = layout
+        self.open = open
+    }
 }
 
 /// A layout by id, or an inline fractional rect (what Capture writes).
