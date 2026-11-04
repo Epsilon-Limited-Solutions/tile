@@ -1,4 +1,5 @@
 import AppKit
+import TileCore
 
 /// `tile://debug/spaces`: everything Tile can see about displays, Spaces and
 /// windows, written to ~/Library/Logs/Tile/spaces.txt.

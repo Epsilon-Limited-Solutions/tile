@@ -1,4 +1,5 @@
 import AppKit
+import TileCore
 
 /// `tile://debug/spike`: build step 2 of PROMPT.md. Runs the Spaces experiments
 /// against a throwaway TextEdit document (and Calculator for the launch test) and
