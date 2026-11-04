@@ -7,17 +7,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let permission = AccessibilityPermission()
     private let configStore = ConfigStore()
     private lazy var commands = WindowCommands(configStore: configStore)
+    private lazy var hotkeys = HotkeyManager { [unowned self] combo in commands.press(combo) }
+    private var watcher: ConfigWatcher?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.button?.image = NSImage(systemSymbolName: "rectangle.split.2x2", accessibilityDescription: "Tile")
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
 
-        configStore.load()
+        reloadConfig()
+        watcher = ConfigWatcher(directory: ConfigStore.url.deletingLastPathComponent()) { [unowned self] in
+            reloadConfig()
+        }
         permission.requestIfNeeded()
         Log.app.info("Tile launched")
+    }
+
+    /// Loads the config file and re-registers every hotkey. A bad file keeps the last
+    /// good config and turns the menu bar icon into a warning.
+    private func reloadConfig() {
+        configStore.load()
+        hotkeys.register(BindingTable(configStore.config.bindings).combos)
+        let symbol = configStore.lastError == nil ? "rectangle.split.2x2" : "exclamationmark.triangle"
+        statusItem.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Tile")
     }
 
     // MARK: URL scheme
@@ -76,7 +89,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(disabled("Config error, using the last good config:"))
             for issue in error.split(separator: "\n") { menu.addItem(disabled("  \(issue)")) }
         }
+        menu.addItem(disabled("Hotkeys: \(hotkeys.registeredCount) active"))
+        for (combo, reason) in hotkeys.unavailable {
+            menu.addItem(disabled("  \(combo) unavailable (\(reason))"))
+        }
 
+        menu.addItem(.separator())
+        menu.addItem(item("Open Config File", #selector(openConfig)))
+        menu.addItem(item("Reload Config", #selector(reloadConfigFromMenu)))
         menu.addItem(.separator())
         menu.addItem(item("Run Selftest", #selector(runSelftest)))
         menu.addItem(item("Dump Spaces Report", #selector(dumpSpaces)))
@@ -99,6 +119,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openAccessibilitySettings() {
         permission.openSettings()
+    }
+
+    @objc private func openConfig() {
+        NSWorkspace.shared.open(ConfigStore.url)
+    }
+
+    @objc private func reloadConfigFromMenu() {
+        reloadConfig()
     }
 
     @objc private func runSelftest() {

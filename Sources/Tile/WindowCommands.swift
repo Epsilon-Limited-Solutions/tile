@@ -7,12 +7,77 @@ import TileCore
 final class WindowCommands {
     private let configStore: ConfigStore
     private var history = WindowHistory<CGWindowID>()
+    /// Per window: the cycle binding last applied, which entry, and the frame it left.
+    private var lastCycle: [CGWindowID: (binding: KeyBinding, index: Int, frame: CGRect)] = [:]
+    private var pressQueue: Task<Void, Never>?
 
     init(configStore: ConfigStore) {
         self.configStore = configStore
     }
 
     private var config: Config { configStore.config }
+
+    // MARK: Hotkeys
+
+    /// Handles presses one at a time, in order, so a quick double press steps a cycle twice.
+    func press(_ combo: KeyCombo) {
+        let previous = pressQueue
+        pressQueue = Task {
+            await previous?.value
+            await handle(combo)
+        }
+    }
+
+    /// Resolves the binding for `combo` against the active profile and the display the
+    /// focused window is on, then runs it.
+    private func handle(_ combo: KeyCombo) async {
+        let displays = DisplayInfo.all()
+        let geometry = ScreenGeometry(displays: displays)
+        let match = ProfileMatching.activeProfile(config.profiles, displays: displays)
+        var context = BindingContext(profile: match?.profile.id)
+        var window: WindowMover.Window?
+        var noWindowReason = ""
+        do {
+            window = try WindowMover.focusedWindow(ignoring: config.ignoredApps)
+        } catch {
+            noWindowReason = "\(error)"
+        }
+        if let frame = window?.frame, let display = geometry.display(for: frame) {
+            context.display = match?.role(of: display.id)
+            context.orientation = Orientation(of: display.frame.size)
+        }
+        let scope = "profile \(context.profile ?? "none"), display \(context.display ?? "none"), \(context.orientation?.rawValue ?? "no window")"
+        guard let binding = BindingTable(config.bindings).resolve(combo, in: context) else {
+            return refuse("\(combo): no binding applies (\(scope))")
+        }
+        Log.app.info("\(combo.description, privacy: .public) (\(scope, privacy: .public)) -> \(String(describing: binding.target), privacy: .public)")
+
+        if case .arrange(let id) = binding.target {
+            return refuse("arrangements aren't built yet (step 7): '\(id)'")
+        }
+        guard let window else { return refuse(noWindowReason) }
+        switch binding.target {
+        case .layout(let id):
+            guard let layout = config.layout(id) else { return refuse("no layout has id '\(id)'") }
+            await apply(layout, to: window)
+        case .cycle(let ids):
+            await cycle(ids, of: binding, on: window)
+        case .action(let action):
+            await perform(action, on: window)
+        case .arrange:
+            break
+        }
+    }
+
+    /// Repeated presses step through `ids` while the window stays where the last press put it.
+    private func cycle(_ ids: [String], of binding: KeyBinding, on window: WindowMover.Window) async {
+        guard let current = window.frame else { return refuse("can't read the window's frame") }
+        let last = window.id.flatMap { lastCycle[$0] }.flatMap { $0.binding == binding ? ($0.index, $0.frame) : nil }
+        let index = Cycle.nextIndex(count: ids.count, last: last, current: current)
+        guard let layout = config.layout(ids[index]) else { return refuse("no layout has id '\(ids[index])'") }
+        let placed = await apply(layout, to: window)
+        if let id = window.id, let placed { lastCycle[id] = (binding, index, placed) }
+    }
 
     // MARK: Focused window. Beeps when there's nothing to act on.
 
