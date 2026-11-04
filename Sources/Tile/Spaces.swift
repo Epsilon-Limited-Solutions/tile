@@ -79,8 +79,9 @@ enum Spaces {
         return nil
     }
 
-    /// Hypothesis under test in the spike: "Switch to Desktop N" numbers user
-    /// desktops 1...N across displays, in SkyLight's display order.
+    /// "Switch to Desktop N" numbers user desktops 1...N across displays, in
+    /// SkyLight's display order (not left-to-right). Verified by the spike on
+    /// macOS 26.2 with 5 + 2 + 3 desktops: built-in, then Vertical-Right, then Vertical-Left.
     static func predictedShortcutNumbers(_ snapshot: [DisplaySpaces]) -> [Int: DesktopTarget] {
         var result: [Int: DesktopTarget] = [:]
         var number = 0
