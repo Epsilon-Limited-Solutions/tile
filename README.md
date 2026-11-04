@@ -1,0 +1,279 @@
+# Tile
+
+A personal macOS window manager, a menu-bar app. It does four things:
+
+- **Snapping.** It snaps windows into layouts you define, on shortcuts you define.
+- **Display profiles.** It knows your display setups, and shortcuts can act differently per display (top/bottom on a portrait monitor, left/right on the laptop).
+- **Arrangements.** One shortcut launches your apps and puts each window on the right screen and the right native desktop (Space), so the 4-finger swipe finds everything in place.
+- **Capture.** You lay windows out by hand and Capture saves them as an arrangement.
+
+It uses no SIP changes, injects nothing into the Dock, and fakes no workspaces off-screen.
+
+## Build and install
+
+You need macOS 15 or later and Xcode, at `/Applications/Xcode.app` by default.
+
+```sh
+./build.sh install   # release build, sign, copy to ~/Applications/Tile.app, relaunch
+./build.sh test      # unit tests (swift test)
+./build.sh release   # signed dist/Tile-<version>.zip + .sha256, for a Homebrew cask later
+```
+
+`build.sh` signs with the `Apple Development` identity. To use another one, set `TILE_SIGN_IDENTITY`.
+
+**Never ad-hoc sign.** The Accessibility grant is tied to the code signature, and an ad-hoc signature changes with every build.
+
+On first launch Tile asks for Accessibility. Grant it in System Settings › Privacy & Security › Accessibility; Tile notices without a relaunch.
+
+If the grant gets stuck (the toggle is on but Tile says it isn't), reset it and grant it again:
+
+```sh
+tccutil reset Accessibility com.epsilonlimited.tile
+```
+
+To start Tile at login, turn on **Launch at Login** in its menu. It uses `SMAppService`, so the login item shows in System Settings › General › Login Items.
+
+## macOS settings arrangements need
+
+Tile checks these at launch and lists any that are wrong at the top of its menu.
+
+| Setting | Must be | Fix |
+|---|---|---|
+| Automatically rearrange Spaces based on most recent use | off | `defaults write com.apple.dock mru-spaces -bool false && killall Dock` |
+| Displays have separate Spaces | on | System Settings › Desktop & Dock › Mission Control (then log out) |
+| Switch to Desktop N shortcuts | on, one for every desktop | System Settings › Keyboard › Keyboard Shortcuts › Mission Control |
+| Dock › Options › Assign To | None, for apps in arrangements | right-click the app's Dock icon |
+
+- **Rearranging Spaces.** If it's on, macOS reorders desktops as you use them, and "desktop 2" stops meaning anything.
+- **Desktop N shortcuts.** Tile switches desktops by posting these shortcuts. macOS only lists them for desktops that exist, and only up to Desktop 16.
+- **Numbering across displays.** Desktop N counts the desktops of every display together, in the window server's display order, not left to right. On this machine that's the built-in display, then Vertical-Right, then Vertical-Left. Tile works the numbering out itself; arrangements just say "vertical-right, desktop 2".
+- **Assign To.** An app pinned to a desktop gets moved back there by macOS. Tile warns about it in the arrangement report.
+- **Reduce motion.** System Settings › Accessibility › Display › Reduce motion makes desktop switches much faster, and arrangements with them.
+
+## The config file
+
+It lives at `~/.config/tile/config.json` and is written with defaults on first launch. Tile watches the file and reloads on every save. Use **Open Config File** in the menu to edit it.
+
+A broken file never replaces a working one. Tile keeps the last good config, turns its menu bar icon into a warning triangle, and shows each problem in the menu with its path (`bindings[3].layout: no layout has id 'lefthalf'`).
+
+```jsonc
+{
+  "gaps": { "outer": 10, "inner": 10 },        // points: at the screen edge, and between windows
+  "ignoredApps": ["com.apple.FaceTime"],       // bundle ids Tile never moves, and Capture skips
+  "profiles": [ ... ],
+  "layouts": [ ... ],
+  "bindings": [ ... ],
+  "arrangements": [ ... ],
+  "grab": { "com.google.Chrome": [400, 8] }    // optional, see Arrangements
+}
+```
+
+The file is plain JSON, so it can't hold comments. The comments above are only for this README.
+
+### Layouts
+
+Each layout is one of three forms:
+
+- **Rect:** fractions of the screen's visible frame (inside the menu bar and Dock), from its top-left corner.
+- **Grid:** pick a block of cells from a grid.
+- **Center:** centers the window and keeps its size.
+
+```json
+{ "id": "left-half", "name": "Left Half", "rect": [0, 0, 0.5, 1] },
+{ "id": "middle-third", "name": "Middle Third", "grid": [1, 3], "cells": [0, 1, 1, 1] },
+{ "id": "center", "name": "Center", "center": true }
+```
+
+For a grid, `grid` is `[columns, rows]` and `cells` is `[column, row, columnSpan, rowSpan]`, counting from 0.
+
+### Bindings
+
+A binding maps a shortcut to exactly one of these:
+
+- `"layout"`
+- `"cycle"`: repeated presses step through its layouts while the window stays where the last press put it.
+- `"action"`: `restore`, `next-display` or `previous-display`.
+- `"arrange"`: runs an arrangement.
+
+```json
+{ "keys": "ctrl+opt+left", "cycle": ["left-half", "left-third", "left-two-thirds"] },
+{ "keys": "ctrl+opt+left", "when": { "orientation": "portrait" }, "cycle": ["top-half", "top-third", "top-two-thirds"] },
+{ "keys": "opt+f", "layout": "full" },
+{ "keys": "hyper+w", "arrange": "work" }
+```
+
+**Key strings.**
+
+- Modifiers: `ctrl`, `opt`, `shift`, `cmd`, and `hyper`, which is all four.
+- Keys: letters, digits, arrows, `return`, `space`, `tab`, `escape`, `delete`, `f1` to `f20`, and punctuation (`;` `'` `,` `.` `/` `[` `]` `-` `=` `` ` `` `\`).
+- A US key layout is assumed.
+- Bare keys and shift-only keys are refused, except F-keys, because they'd take over typing.
+- `opt+letter` works. Older notes said macOS 15 refuses Option-only shortcuts, but macOS 26.2 registers and delivers them. They do stop Option typing the character, so `opt+f` no longer types ƒ.
+
+**`when`.** It narrows a binding to a `profile`, a display role (`display`), or an `orientation` (`portrait` or `landscape`) of the display the focused window is on. Several bindings can share keys. When more than one matches a press, the most specific wins: display, then orientation, then profile, then no `when`. Two bindings with the same keys and the same `when` are an error, because one could never fire.
+
+### Profiles
+
+A profile names the displays it expects and gives each one a role.
+
+**Matching.** Tile picks the first profile whose roles match the connected displays one to one, with the same count. A matcher can use any of these:
+
+- `builtin`
+- `name`: macOS's name for the display. The ` (1)`/` (2)` it adds to identical monitors is ignored, since the numbers can swap.
+- `serial`: tells identical monitors apart.
+- `rotation`: in degrees.
+
+```json
+{ "id": "laptop", "displays": { "laptop": { "builtin": true } } },
+{ "id": "one-monitor", "displays": { "laptop": { "builtin": true }, "vertical": { "name": "DELL S2722QC" } } },
+{ "id": "desk", "onActivate": "work", "displays": {
+    "laptop":         { "builtin": true },
+    "vertical-left":  { "name": "DELL S2722QC", "serial": 810894658 },
+    "vertical-right": { "name": "DELL S2722QC", "serial": 825446978 } } }
+```
+
+**Re-matching.** Tile matches again when displays connect or disconnect. It waits 3 seconds for them to settle, so a dock that brings monitors up one at a time doesn't briefly look like the one-monitor setup.
+
+**`onActivate`.** This runs an arrangement when its profile becomes active by plugging in. It doesn't run at launch, on a config edit, or on a manual override.
+
+**Menu items.**
+
+- **Profile ›** overrides the match by hand. Displays the profile has no role for are ignored. The override lasts until you pick Automatic or the displays stop fitting it.
+- **Copy Current Displays as Profile JSON** puts a profile for the connected displays on the clipboard, with serials wherever two monitors share a name.
+
+### Arrangements
+
+An arrangement belongs to one profile, and lists `{display role, desktop}` targets with the windows that go on each. `desktop` counts from 1 among that display's desktops, in Mission Control order.
+
+```json
+{ "id": "work", "profile": "desk",
+  "endOn": { "laptop": 1, "vertical-left": 1, "vertical-right": 1 },
+  "desktops": [
+    { "display": "vertical-right", "desktop": 1, "windows": [
+        { "app": "com.microsoft.VSCode", "title": "— epsilon$", "layout": "top-two-thirds", "open": ["~/epsilon"] },
+        { "app": "dev.warp.Warp-Stable", "layout": "bottom-third" } ] },
+    { "display": "vertical-right", "desktop": 2, "windows": [
+        { "app": "com.tinyspeck.slackmacgap", "layout": "top-half" } ] }
+  ] }
+```
+
+Each window entry has these fields:
+
+- `app`: the bundle id. To find one: `osascript -e 'id of app "Slack"'`
+- `title` (optional): a regex that picks one of the app's windows by title. Use it when an app has several windows in the arrangement.
+- `layout`: a layout id, or `rect` with fractions.
+- `open` (optional): paths or URLs to open with the app when no window matches, such as a project folder for the editor.
+
+`endOn` (optional) says which desktop to leave each display on. Without it, Tile goes back to the desktops showing when the run started.
+
+**Running one.** Use its binding, the **Arrangements** menu, `tile://arrange?id=work`, or the profile's `onActivate`.
+
+1. **It checks first and stops before touching anything** if a role has no display, a display has too few desktops ("vertical-right needs 3 desktops, has 2: add one in Mission Control"), or a desktop it needs has no Desktop N shortcut. Tile can't create desktops.
+2. **Apps that aren't running** are launched with their target desktop showing, so their first window opens there. Tile waits up to 15 seconds for the window.
+3. **Windows that are already open** move to their desktop and display:
+   - To another display: show the target desktop there, then move the window across.
+   - To another desktop of the same display: park the window on another display, show the target desktop, and bring it back.
+   - With only one display: carry it, holding the title bar while the desktop switches.
+4. **A second run with everything in place changes nothing** and makes no desktop switches.
+5. **Failures** go in a small panel at the top of the screen and in `~/Library/Logs/Tile/arrange.txt`, and the run continues with the rest. **Esc** cancels between steps and returns to the starting desktops.
+
+**Carrying a window** needs a point on its title bar that isn't a tab or a button. Tile hit-tests the title bar for one, right of the traffic lights. If carrying grabs the wrong thing in some app (a tab tears off, say), set `"grab": { "<bundle id>": [x, y] }`, in points from the window's top-left. Carrying is only needed when one display is connected.
+
+### Capture
+
+Use **Capture Current Desktops into Arrangement…** in the menu, or `tile://capture?name=work`.
+
+1. Lay out a desktop by hand.
+2. Capture it under a name.
+3. Swipe each display to its next desktop and capture again under the same name.
+
+Each capture records the desktop showing on every display of the active profile, with every standard window on it. Frames are saved as rects rounded to 0.001, adjusted so the gaps put each window back exactly where it was.
+
+Re-capturing a desktop replaces its old entry, and the rest of the arrangement stays. Titles are only recorded for apps with several windows in the capture. A single window's title changes (web pages, documents, channels), and a stale title would stop it matching.
+
+Capture rewrites only the `arrangements` section of the file, in the same layout as above, and leaves the rest of your text alone. The Settings window does the same for `layouts`, `bindings` and `ignoredApps`.
+
+## Settings window
+
+Open it with **Settings…** in the menu, or `tile://settings`. It has three tabs:
+
+- **Bindings.** Click a shortcut to record a new one. Esc cancels the recording, and Delete clears the shortcut, which removes the binding on save. Rows are flagged when they conflict with another binding or another app holds the shortcut. Cycles are edited in the JSON.
+- **Layouts.** Edit a rect, or drag across a grid to pick cells. Each layout is previewed on every display of the active profile, in that display's shape, with the gaps applied.
+- **Ignored Apps.** Remove apps, or add one from the running apps.
+
+**Save** validates everything together and writes only those sections. Profiles and arrangements stay in the JSON, or come from Capture.
+
+## URL scheme
+
+| URL | Does |
+|---|---|
+| `tile://apply?layout=<id>` | applies a layout to the focused window |
+| `tile://action?name=<restore\|next-display\|previous-display>` | runs an action on the focused window |
+| `tile://arrange?id=<id>` | runs an arrangement |
+| `tile://capture?name=<id>` | captures the showing desktops into an arrangement |
+| `tile://profile?id=<id>` / `tile://profile` | overrides the profile / back to automatic |
+| `tile://settings` | opens Settings |
+| `tile://selftest` | applies every layout on every display to a TextEdit window and checks each frame. Writes `selftest.txt`. Moves a window, switches no desktops. |
+| `tile://debug/arrangetest` | the arranger's selftest: TextEdit documents and Calculator across desktops, run twice to check idempotence. Writes `arrangetest.txt`. **Switches desktops: hands off.** |
+| `tile://debug/spaces` | displays, desktops, and which desktop each window is on. Writes `spaces.txt`. |
+| `tile://debug/spike` | the original Spaces experiments. Writes `spike.txt`. **Takes over the mouse.** |
+
+Reports go to `~/Library/Logs/Tile/`. Everything is also logged through `os.Logger` under the subsystem `com.epsilonlimited.tile`:
+
+```sh
+/usr/bin/log stream --level info --predicate 'subsystem == "com.epsilonlimited.tile"'
+```
+
+(In zsh, give the full path: `log` on its own is a shell builtin.)
+
+## How desktops are handled, and what's private
+
+macOS has no public API for Spaces. The spike (`tile://debug/spike`) tested every method on macOS 26.2.
+
+**Reading** uses private SkyLight functions that work with SIP on:
+
+- `SLSCopyManagedDisplaySpaces`: desktops per display
+- `SLSManagedDisplayGetCurrentSpace`: the desktop showing
+- `SLSCopySpacesForWindows`: which desktop a window is on
+- `_AXUIElementGetWindow`: the window id behind an AX element
+
+They're all in `Sources/Tile/Private/SkyLight.swift` and resolved with `dlsym`, so a symbol Apple removes turns into an error, not a crash.
+
+**Writing** through SkyLight (`SLSMoveWindowsToManagedSpace` and the like) does nothing from any process but the Dock, so Tile doesn't. It moves windows the ways listed under Arrangements: Desktop N shortcuts, AX moves across displays, and carrying by the title bar.
+
+## Homebrew (later)
+
+The plan:
+
+- a personal tap, `Epsilon-Limited-Solutions/homebrew-tap`
+- `Casks/tile.rb` pointing at the GitHub release zip from `./build.sh release`, with its sha256
+
+**Why it can't ship as is.** A downloaded zip gets the quarantine flag. Gatekeeper refuses an app signed with an Apple Development certificate, which only works for builds made on this machine.
+
+**What `build.sh release` would need:**
+
+1. **Sign with a Developer ID Application certificate.** `TILE_SIGN_IDENTITY="Developer ID Application: …"`. The script already uses the hardened runtime and a secure timestamp for releases.
+2. **Notarize the zip:** `xcrun notarytool submit dist/Tile-<version>.zip --keychain-profile <profile> --wait`
+3. **Staple the ticket to the app** with `xcrun stapler staple dist/Tile.app`. Then zip it again and recompute the sha256, since stapling changes the bundle.
+4. **Upload to GitHub,** then bump `version` and `sha256` in the cask.
+
+A Developer ID build has a different signature from the Apple Development one. The first run after switching needs Accessibility granted again (or `tccutil reset`).
+
+## Layout of the code
+
+- `Sources/TileCore`: pure logic, all unit tested.
+  - geometry and coordinate flips
+  - the layout engine
+  - config parsing, validation and writing back
+  - key strings
+  - binding resolution
+  - profile matching
+  - arrangement planning and Capture
+- `Sources/Tile`: the AppKit app.
+  - AX window moving
+  - hotkeys (Carbon `RegisterEventHotKey`)
+  - display profiles
+  - Spaces
+  - the Arranger, Capture, the menu, and Settings (SwiftUI)
+- `Tests/TileCoreTests`: `swift test`
+- `PROMPT.md`: the original spec.
