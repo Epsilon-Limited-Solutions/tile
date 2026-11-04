@@ -1,4 +1,5 @@
 import AppKit
+import ServiceManagement
 import TileCore
 
 @MainActor
@@ -12,6 +13,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     private lazy var hotkeys = HotkeyManager { [unowned self] combo in commands.press(combo) }
     private lazy var arranger = Arranger(configStore: configStore, profiles: profiles, hotkeys: hotkeys)
+    private lazy var settings = SettingsWindow(configStore: configStore, profiles: profiles, hotkeys: hotkeys) { [unowned self] in
+        registerHotkeys()
+    }
+    /// The app that was frontmost when the menu opened (the menu doesn't change it).
+    private var frontmostBundleID: String?
     private var watcher: ConfigWatcher?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -33,9 +39,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func reloadConfig() {
         configStore.load()
         profiles.configChanged()
-        hotkeys.register(BindingTable(configStore.config.bindings).combos)
+        registerHotkeys()
+        settings.configReloaded()
         let symbol = configStore.lastError == nil ? "rectangle.split.2x2" : "exclamationmark.triangle"
         statusItem.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Tile")
+    }
+
+    private func registerHotkeys() {
+        hotkeys.register(BindingTable(configStore.config.bindings).combos)
     }
 
     private func runArrangement(_ id: String) {
@@ -75,6 +86,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             Capture.run(named: name, configStore: configStore, profiles: profiles)
         case .profile(let id):
             profiles.setOverride(id)
+        case .settings:
+            settings.show()
         case .selftest:
             SelfTest.start(configStore: configStore, commands: commands)
         case .debug(command: "spaces", params: _):
@@ -112,21 +125,71 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
+        menu.addItem(layoutsItem())
         menu.addItem(arrangementsItem())
         menu.addItem(item("Capture Current Desktops into Arrangement…", #selector(capture)))
         menu.addItem(.separator())
         menu.addItem(profileItem())
         menu.addItem(item("Copy Current Displays as Profile JSON", #selector(copyProfileJSON)))
+        if let ignore = ignoreItem() {
+            menu.addItem(.separator())
+            menu.addItem(ignore)
+        }
 
         menu.addItem(.separator())
+        menu.addItem(item("Settings…", #selector(openSettings), key: ","))
         menu.addItem(item("Open Config File", #selector(openConfig)))
         menu.addItem(item("Reload Config", #selector(reloadConfigFromMenu)))
+        let login = item(launchAtLoginTitle, #selector(toggleLaunchAtLogin))
+        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        menu.addItem(login)
         menu.addItem(.separator())
-        menu.addItem(item("Run Selftest", #selector(runSelftest)))
-        menu.addItem(item("Dump Spaces Report", #selector(dumpSpaces)))
-        menu.addItem(item("Open Logs Folder", #selector(openLogs)))
-        menu.addItem(.separator())
+        menu.addItem(debugItem())
         menu.addItem(item("Quit Tile", #selector(NSApplication.terminate(_:)), key: "q"))
+    }
+
+    /// Every layout; clicking one applies it to the frontmost app's focused window.
+    private func layoutsItem() -> NSMenuItem {
+        let parent = NSMenuItem(title: "Layouts", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        let keys = Dictionary(configStore.config.bindings.compactMap { binding -> (String, String)? in
+            guard case .layout(let id) = binding.target, binding.when == .init() else { return nil }
+            return (id, binding.keys.description)
+        }, uniquingKeysWith: { first, _ in first })
+        for layout in configStore.config.layouts {
+            let entry = item(layout.name + (keys[layout.id].map { "    \($0)" } ?? ""), #selector(applyLayout(_:)))
+            entry.representedObject = layout.id
+            submenu.addItem(entry)
+        }
+        parent.submenu = submenu
+        return parent
+    }
+
+    /// "Ignore Slack" for the app that was frontmost, or "Stop Ignoring Slack".
+    private func ignoreItem() -> NSMenuItem? {
+        let app = NSWorkspace.shared.frontmostApplication
+        guard let app, let bundleID = app.bundleIdentifier, bundleID != Bundle.main.bundleIdentifier else { return nil }
+        frontmostBundleID = bundleID
+        let name = app.localizedName ?? bundleID
+        let ignored = configStore.config.ignoredApps.contains(bundleID)
+        return item(ignored ? "Stop Ignoring \(name)" : "Ignore \(name)", #selector(toggleIgnore))
+    }
+
+    private var launchAtLoginTitle: String {
+        SMAppService.mainApp.status == .requiresApproval
+            ? "Launch at Login (approve in System Settings > Login Items)"
+            : "Launch at Login"
+    }
+
+    private func debugItem() -> NSMenuItem {
+        let parent = NSMenuItem(title: "Debug", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        submenu.addItem(item("Run Selftest (moves a test window)", #selector(runSelftest)))
+        submenu.addItem(item("Run Arrangement Test (switches desktops)", #selector(runArrangeTest)))
+        submenu.addItem(item("Dump Spaces Report", #selector(dumpSpaces)))
+        submenu.addItem(item("Open Logs Folder", #selector(openLogs)))
+        parent.submenu = submenu
+        return parent
     }
 
     /// Each arrangement; the ones for another profile say which.
@@ -182,6 +245,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openAccessibilitySettings() {
         permission.openSettings()
+    }
+
+    @objc private func applyLayout(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        Task { await commands.apply(layoutID: id) }
+    }
+
+    @objc private func toggleIgnore() {
+        guard let bundleID = frontmostBundleID else { return }
+        do {
+            try configStore.replaceSection("ignoredApps") { current in
+                let apps = current.ignoredApps.contains(bundleID)
+                    ? current.ignoredApps.filter { $0 != bundleID }
+                    : current.ignoredApps + [bundleID]
+                return ConfigFormat.strings(apps)
+            }
+        } catch {
+            alert("Couldn't change the ignore list", "\(error)")
+        }
+    }
+
+    @objc private func openSettings() {
+        settings.show()
+    }
+
+    @objc private func toggleLaunchAtLogin() {
+        let service = SMAppService.mainApp
+        do {
+            if service.status == .enabled {
+                try service.unregister()
+            } else {
+                try service.register()
+                if service.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
+            }
+            Log.app.info("launch at login: \(String(describing: service.status), privacy: .public)")
+        } catch {
+            alert("Couldn't change Launch at Login", error.localizedDescription)
+        }
+    }
+
+    @objc private func runArrangeTest() {
+        ArrangeTest.start(arranger: arranger, configStore: configStore, profiles: profiles)
+    }
+
+    private func alert(_ title: String, _ detail: String) {
+        Log.app.error("\(title, privacy: .public): \(detail, privacy: .public)")
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = detail
+        NSApp.activate()
+        alert.runModal()
     }
 
     @objc private func runArrangementFromMenu(_ sender: NSMenuItem) {

@@ -9,6 +9,7 @@ public enum Route: Equatable, Sendable {
     case capture(name: String)
     /// `tile://profile?id=<id>` picks a profile by hand; `tile://profile` goes back to automatic.
     case profile(id: String?)
+    case settings
     case selftest
     /// `tile://debug/<command>?key=value`: diagnostics and Spaces experiments.
     case debug(command: String, params: [String: String])
@@ -52,6 +53,7 @@ extension Route {
         case "arrange": return .arrange(id: try require("id"))
         case "capture": return .capture(name: try require("name"))
         case "profile": return .profile(id: params["id"].flatMap { $0.isEmpty ? nil : $0 })
+        case "settings": return .settings
         case "selftest": return .selftest
         case "debug":
             guard let command = components.path.split(separator: "/").first.map(String.init) else {

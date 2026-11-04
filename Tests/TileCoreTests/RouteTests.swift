@@ -15,6 +15,7 @@ struct RouteTests {
         #expect(try parse("tile://selftest") == .selftest)
         #expect(try parse("tile://profile?id=desk") == .profile(id: "desk"))
         #expect(try parse("tile://profile") == .profile(id: nil))
+        #expect(try parse("tile://settings") == .settings)
     }
 
     @Test func parsesDebugCommandAndParams() throws {

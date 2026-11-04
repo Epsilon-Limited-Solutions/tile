@@ -39,6 +39,12 @@ final class ConfigStore {
     /// disk and returns the section's new JSON. Refuses if the file has errors now or
     /// the result wouldn't load. The watcher sees the write and reloads.
     func replaceSection(_ key: String, with section: (Config) throws -> String) throws {
+        try replaceSections { current in [(key, try section(current))] }
+    }
+
+    /// Several sections at once, validated together: a renamed layout and the
+    /// bindings that use it only load as a pair.
+    func replaceSections(_ sections: (Config) throws -> [(key: String, json: String)]) throws {
         // Through a symlink (dotfiles), so the write doesn't replace the link with a file.
         let url = Self.url.resolvingSymlinksInPath()
         let text = try String(contentsOf: url, encoding: .utf8)
@@ -48,13 +54,19 @@ final class ConfigStore {
         } catch {
             throw WriteError(description: "config.json has errors; fix them first:\n\(error)")
         }
-        let updated = try ConfigText.replacingValue(of: key, with: try section(current), in: text)
+        let changes = try sections(current)
+        var updated = text
+        for (key, json) in changes {
+            updated = try ConfigText.replacingValue(of: key, with: json, in: updated)
+        }
+        let keys = changes.map(\.key).joined(separator: ", ")
         do {
             _ = try Config.parse(Data(updated.utf8))
         } catch {
-            throw WriteError(description: "the new \(key) wouldn't load, so nothing was written:\n\(error)")
+            throw WriteError(description: "that wouldn't load, so nothing was written:\n\(error)")
         }
+        guard updated != text else { return }
         try updated.write(to: url, atomically: true, encoding: .utf8)
-        Log.app.info("rewrote \(key, privacy: .public) in \(url.path, privacy: .public)")
+        Log.app.info("rewrote \(keys, privacy: .public) in \(url.path, privacy: .public)")
     }
 }
