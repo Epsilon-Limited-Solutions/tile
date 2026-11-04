@@ -111,8 +111,8 @@ struct ConfigTests {
     }
 
     @Test func badKeyStringsSayWhy() {
-        #expect(issues(#"{ "bindings": [ { "keys": "opt+a", "action": "restore" } ] }"#)
-                == ["bindings[0].keys: 'opt+a': macOS 15 and later refuse shortcuts whose only modifiers are opt or opt+shift; add ctrl or cmd"])
+        #expect(issues(#"{ "bindings": [ { "keys": "shift+a", "action": "restore" } ] }"#)
+                == ["bindings[0].keys: 'shift+a' would take over a key you type with; add ctrl or cmd"])
         #expect(issues(#"{ "bindings": [ { "keys": "ctrl+opt+lft", "action": "restore" } ] }"#)
                 == ["bindings[0].keys: unknown key 'lft' in 'ctrl+opt+lft'"])
     }

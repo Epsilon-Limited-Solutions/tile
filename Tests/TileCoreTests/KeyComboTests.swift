@@ -81,12 +81,10 @@ struct KeyComboTests {
         #expect(try parse("shift+f5").modifiers == [.shift])
     }
 
-    @Test func rejectsOptOnlyBecauseMacOSDoes() {
-        #expect(error("opt+a")?.contains("macOS 15 and later refuse") == true)
-        #expect(error("opt+shift+left")?.contains("opt or opt+shift") == true)
-        #expect(error("opt+f1")?.contains("macOS 15") == true)
-        #expect(error("ctrl+opt+a") == nil)
-        #expect(error("cmd+opt+shift+a") == nil)
+    @Test func acceptsOptOnly() throws {
+        #expect(try parse("opt+f") == KeyCombo(keyCode: UInt32(kVK_ANSI_F), modifiers: [.opt]))
+        #expect(try parse("opt+shift+left").modifiers == [.opt, .shift])
+        #expect(try parse("opt+;").description == "opt+;")
     }
 
     @Test func rejectsKeysYouTypeWith() {

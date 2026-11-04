@@ -62,9 +62,8 @@ public struct KeyCombo: Hashable, Sendable, CustomStringConvertible {
             }
             throw KeyComboError("unknown key '\(keyName)' in '\(string)'")
         }
-        if modifiers.contains(.opt), modifiers.isSubset(of: [.opt, .shift]) {
-            throw KeyComboError("'\(string)': macOS 15 and later refuse shortcuts whose only modifiers are opt or opt+shift; add ctrl or cmd")
-        }
+        // opt and opt+shift alone are allowed: macOS 15 was reported to refuse them for
+        // RegisterEventHotKey, but 26.2 registers them, and Mosaic users bind opt+letter.
         if modifiers.isSubset(of: [.shift]), !Self.functionKeys.contains(code) {
             throw KeyComboError("'\(string)' would take over a key you type with; add ctrl or cmd")
         }
