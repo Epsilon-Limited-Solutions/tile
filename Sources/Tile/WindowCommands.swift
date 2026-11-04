@@ -6,13 +6,18 @@ import TileCore
 @MainActor
 final class WindowCommands {
     private let configStore: ConfigStore
+    private let profiles: DisplayProfiles
+    /// Runs an arrangement by id (an `arrange` binding).
+    private let arrange: (String) -> Void
     private var history = WindowHistory<CGWindowID>()
     /// Per window: the cycle binding last applied, which entry, and the frame it left.
     private var lastCycle: [CGWindowID: (binding: KeyBinding, index: Int, frame: CGRect)] = [:]
     private var pressQueue: Task<Void, Never>?
 
-    init(configStore: ConfigStore) {
+    init(configStore: ConfigStore, profiles: DisplayProfiles, arrange: @escaping (String) -> Void) {
         self.configStore = configStore
+        self.profiles = profiles
+        self.arrange = arrange
     }
 
     private var config: Config { configStore.config }
@@ -33,7 +38,7 @@ final class WindowCommands {
     private func handle(_ combo: KeyCombo) async {
         let displays = DisplayInfo.all()
         let geometry = ScreenGeometry(displays: displays)
-        let match = ProfileMatching.activeProfile(config.profiles, displays: displays)
+        let match = profiles.match(displays)
         var context = BindingContext(profile: match?.profile.id)
         var window: WindowMover.Window?
         var noWindowReason = ""
@@ -53,7 +58,7 @@ final class WindowCommands {
         Log.app.info("\(combo.description, privacy: .public) (\(scope, privacy: .public)) -> \(String(describing: binding.target), privacy: .public)")
 
         if case .arrange(let id) = binding.target {
-            return refuse("arrangements aren't built yet (step 7): '\(id)'")
+            return arrange(id)
         }
         guard let window else { return refuse(noWindowReason) }
         switch binding.target {

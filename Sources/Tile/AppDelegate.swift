@@ -6,7 +6,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let permission = AccessibilityPermission()
     private let configStore = ConfigStore()
-    private lazy var commands = WindowCommands(configStore: configStore)
+    private lazy var profiles = DisplayProfiles(configStore: configStore) { [unowned self] id in runArrangement(id) }
+    private lazy var commands = WindowCommands(configStore: configStore, profiles: profiles) { [unowned self] id in
+        runArrangement(id)
+    }
     private lazy var hotkeys = HotkeyManager { [unowned self] combo in commands.press(combo) }
     private var watcher: ConfigWatcher?
 
@@ -28,9 +31,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// good config and turns the menu bar icon into a warning.
     private func reloadConfig() {
         configStore.load()
+        profiles.configChanged()
         hotkeys.register(BindingTable(configStore.config.bindings).combos)
         let symbol = configStore.lastError == nil ? "rectangle.split.2x2" : "exclamationmark.triangle"
         statusItem.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Tile")
+    }
+
+    private func runArrangement(_ id: String) {
+        Log.app.info("arrangements aren't built yet (step 7): '\(id, privacy: .public)'")
+        NSSound.beep()
     }
 
     // MARK: URL scheme
@@ -60,6 +69,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return
             }
             Task { await commands.perform(action) }
+        case .profile(let id):
+            profiles.setOverride(id)
         case .selftest:
             SelfTest.start(configStore: configStore, commands: commands)
         case .debug(command: "spaces", params: _):
@@ -95,6 +106,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
+        menu.addItem(profileItem())
+        menu.addItem(item("Copy Current Displays as Profile JSON", #selector(copyProfileJSON)))
+
+        menu.addItem(.separator())
         menu.addItem(item("Open Config File", #selector(openConfig)))
         menu.addItem(item("Reload Config", #selector(reloadConfigFromMenu)))
         menu.addItem(.separator())
@@ -103,6 +118,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item("Open Logs Folder", #selector(openLogs)))
         menu.addItem(.separator())
         menu.addItem(item("Quit Tile", #selector(NSApplication.terminate(_:)), key: "q"))
+    }
+
+    /// "Profile: desk", with a submenu to pick one by hand.
+    private func profileItem() -> NSMenuItem {
+        let displays = DisplayInfo.all()
+        let match = profiles.match(displays)
+        let parent = NSMenuItem(title: "Profile: \(profiles.describe(match))", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        let automatic = item("Automatic", #selector(pickProfile(_:)))
+        automatic.state = profiles.override == nil ? .on : .off
+        submenu.addItem(automatic)
+        submenu.addItem(.separator())
+        for profile in configStore.config.profiles {
+            let reason = profiles.availability(of: profile, displays: displays)
+            let entry = item(profile.id + (reason.map { " (\($0))" } ?? ""), #selector(pickProfile(_:)))
+            entry.representedObject = profile.id
+            entry.state = profiles.override == profile.id ? .on : .off
+            entry.isEnabled = reason == nil
+            submenu.addItem(entry)
+        }
+        parent.submenu = submenu
+        return parent
     }
 
     private func item(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
@@ -119,6 +157,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openAccessibilitySettings() {
         permission.openSettings()
+    }
+
+    @objc private func pickProfile(_ sender: NSMenuItem) {
+        profiles.setOverride(sender.representedObject as? String)
+    }
+
+    @objc private func copyProfileJSON() {
+        let json = ProfileSkeleton.json(for: DisplayInfo.all())
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(json, forType: .string)
+        Log.app.info("copied profile JSON:\n\(json, privacy: .public)")
     }
 
     @objc private func openConfig() {

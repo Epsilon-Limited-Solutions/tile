@@ -66,3 +66,57 @@ public enum ProfileMatching {
         return assign(0) ? roles : nil
     }
 }
+
+extension ProfileMatching {
+    /// The profile picked from the menu, if every one of its roles still has a display.
+    /// Displays it has no role for are ignored.
+    public static func overrideMatch(_ id: String, profiles: [DisplayProfile], displays: [DisplayInfo]) -> ProfileMatch? {
+        guard let profile = profiles.first(where: { $0.id == id }),
+              let roles = assignRoles(profile, displays: displays) else { return nil }
+        return ProfileMatch(profile: profile, roles: roles)
+    }
+
+    /// Why `profile` can't be assigned to `displays`, for error messages.
+    public static func whyUnassignable(_ profile: DisplayProfile, displays: [DisplayInfo]) -> String {
+        let missing = profile.displays.filter { _, matcher in !displays.contains(where: matcher.matches) }.keys.sorted()
+        if missing.isEmpty { return "two of its roles need the same display" }
+        return "no display connected for \(list(missing.map { "'\($0)'" }, or: false))"
+    }
+}
+
+/// "Copy current displays as profile JSON": a profile for the connected displays,
+/// ready to paste into "profiles".
+public enum ProfileSkeleton {
+    /// Roles are "laptop" for the built-in display and the monitor's name otherwise,
+    /// left to right. Identical monitors are told apart by serial (or by rotation when
+    /// they report no serial).
+    public static func json(for displays: [DisplayInfo], id: String = "new-profile") -> String {
+        let ordered = displays.sorted { ($0.frame.minX, $0.frame.minY) < ($1.frame.minX, $1.frame.minY) }
+        func base(_ display: DisplayInfo) -> String { DisplayMatcher.baseName(display.name) }
+        var seen: [String: Int] = [:]
+        let lines = ordered.map { display -> String in
+            if display.isBuiltin { return "\(ConfigFormat.string("laptop")): { \"builtin\": true }" }
+            let name = base(display)
+            let twins = ordered.filter { !$0.isBuiltin && base($0) == name }
+            var role = slug(name)
+            var fields = ["\"name\": \(ConfigFormat.string(name))"]
+            if twins.count > 1 {
+                seen[name, default: 0] += 1
+                role += "-\(seen[name]!)"
+                if display.serial != 0 {
+                    fields.append("\"serial\": \(display.serial)")
+                } else {
+                    fields.append("\"rotation\": \(Int(display.rotation.rounded()))")
+                }
+            }
+            return "\(ConfigFormat.string(role)): { " + fields.joined(separator: ", ") + " }"
+        }
+        return "{ \"id\": \(ConfigFormat.string(id)), \"displays\": {\n"
+            + lines.map { "    " + $0 }.joined(separator: ",\n") + " } }"
+    }
+
+    static func slug(_ name: String) -> String {
+        let words = name.lowercased().split { !$0.isLetter && !$0.isNumber }
+        return words.isEmpty ? "display" : words.joined(separator: "-")
+    }
+}

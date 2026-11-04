@@ -13,6 +13,8 @@ struct RouteTests {
         #expect(try parse("tile://arrange?id=work") == .arrange(id: "work"))
         #expect(try parse("tile://capture?name=work") == .capture(name: "work"))
         #expect(try parse("tile://selftest") == .selftest)
+        #expect(try parse("tile://profile?id=desk") == .profile(id: "desk"))
+        #expect(try parse("tile://profile") == .profile(id: nil))
     }
 
     @Test func parsesDebugCommandAndParams() throws {
