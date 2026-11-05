@@ -134,7 +134,12 @@ A profile names the displays it expects and gives each one a role.
 
 **Re-matching.** Tile matches again when displays connect or disconnect. It waits 3 seconds for them to settle, so a dock that brings monitors up one at a time doesn't briefly look like the one-monitor setup.
 
-**`onActivate`.** This runs an arrangement when its profile becomes active by plugging in. It doesn't run at launch, on a config edit, or on a manual override.
+**`onActivate`.** This names the profile's arrangement. Tile runs it in two cases:
+
+- **At login.** The first time Tile starts in a login session, it waits for the displays to settle (6 seconds without a change), then runs the arrangement with launching on. Every app it names opens onto its desktop, and Tile allows each app 60 seconds to show its window. Restarting Tile later in the same session doesn't run it again, so apps you closed on purpose stay closed. Tile goes by the console login time `last` shows, so starting Tile by hand after logging in counts too.
+- **On docking.** When plugging displays in or out activates the profile, Tile moves the windows that are already open and opens nothing.
+
+It doesn't run on a config edit or on a manual override. To try the login run without logging out, use **Debug › Run Login Arrangement** or `tile://debug/login`.
 
 **Menu items.**
 
@@ -150,7 +155,7 @@ An arrangement belongs to one profile, and lists `{display role, desktop}` targe
   "endOn": { "laptop": 1, "vertical-left": 1, "vertical-right": 1 },
   "desktops": [
     { "display": "vertical-right", "desktop": 1, "windows": [
-        { "app": "com.microsoft.VSCode", "title": "— epsilon$", "layout": "top-two-thirds", "open": ["~/epsilon"] },
+        { "app": "com.microsoft.VSCode", "layout": "top-two-thirds", "open": ["~/epsilon"] },
         { "app": "dev.warp.Warp-Stable", "layout": "bottom-third" } ] },
     { "display": "vertical-right", "desktop": 2, "windows": [
         { "app": "com.tinyspeck.slackmacgap", "layout": "top-half" } ] }
@@ -160,16 +165,19 @@ An arrangement belongs to one profile, and lists `{display role, desktop}` targe
 Each window entry has these fields:
 
 - `app`: the bundle id. To find one: `osascript -e 'id of app "Slack"'`
-- `title` (optional): a regex that picks one of the app's windows by title. Use it when an app has several windows in the arrangement.
+- `title` (optional): a regex that picks one of the app's windows by title. Use it when an app has several windows and nothing to `open`.
 - `layout`: a layout id, or `rect` with fractions.
-- `open` (optional): paths or URLs to open with the app when no window matches, such as a project folder for the editor.
+- `open` (optional): files or folders to open with the app, such as a project folder for the editor or a document. This both opens the window and identifies it later:
+  - A folder matches a window showing a file inside it, or a window whose title names the folder. VS Code titles name the workspace folder ("Arranger.swift — tile"), and terminals often show the working directory ("~/epsilon/tile").
+  - A file matches the window showing that document.
+  - URLs (web pages) are opened but never matched, so add a `title` for those.
 
 `endOn` (optional) says which desktop to leave each display on. Without it, Tile goes back to the desktops showing when the run started.
 
 **Running one.** Use its binding, the **Arrangements** menu, `tile://arrange?id=work`, or the profile's `onActivate`.
 
-1. **It checks first and stops before touching anything** if a role has no display, a display has too few desktops ("vertical-right needs 3 desktops, has 2: add one in Mission Control"), or a desktop it needs has no Desktop N shortcut. Tile can't create desktops.
-2. **Apps that aren't running** are launched with their target desktop showing, so their first window opens there. Tile waits up to 15 seconds for the window.
+1. **Missing desktops are added.** macOS drops an external display's extra desktops when it disconnects, so a redocked monitor often comes back with one. Tile opens Mission Control for a moment and presses the display's add-desktop button through Accessibility, the same way Hammerspoon does. If that fails, or a desktop's Desktop N shortcut is off, the windows bound for that desktop fail, and the rest of the arrangement still runs. It only stops before touching anything when Accessibility or the Mission Control settings are wrong, or no display plays a role.
+2. **Apps and windows that aren't open** are opened with their target desktop showing, so the window opens there. Tile waits up to 30 seconds for the window, or 60 at login. A placement with `open` opens those files or folders. If a docking run finds a window not open, it skips it.
 3. **Windows that are already open** move to their desktop and display:
    - To another display: show the target desktop there, then move the window across.
    - To another desktop of the same display: park the window on another display, show the target desktop, and bring it back.
@@ -189,7 +197,17 @@ Use **Capture Current Desktops into Arrangement…** in the menu, or `tile://cap
 
 Each capture records the desktop showing on every display of the active profile, with every standard window on it. Frames are saved as rects rounded to 0.001, adjusted so the gaps put each window back exactly where it was.
 
-Re-capturing a desktop replaces its old entry, and the rest of the arrangement stays. Titles are only recorded for apps with several windows in the capture. A single window's title changes (web pages, documents, channels), and a stale title would stop it matching.
+Re-capturing a desktop replaces its old entry, and the rest of the arrangement stays.
+
+**What brings each window back.** A window records `open` when Tile can tell what it shows:
+
+- **Documents:** the file (TextEdit, Preview, Pages, and other apps that report one).
+- **VS Code and its forks** (Insiders, VSCodium, Cursor, Windsurf): the workspace folder, so two VS Code windows on two projects come back as those two projects.
+- **Terminals:** the working directory, when the app reports it (Terminal) or puts the path in the title. Warp's title is the tab name, so Warp windows are matched by app.
+
+Browsers, Mail and Finder never record `open`: they restore their own windows, and opening a page again would duplicate it.
+
+Without `open`, a title is recorded only when the app has several windows in the capture. A single window's title changes (web pages, channels), and a stale title would stop it matching.
 
 Capture rewrites only the `arrangements` section of the file, in the same layout as above, and leaves the rest of your text alone. The Settings window does the same for `layouts`, `bindings` and `ignoredApps`.
 
@@ -214,7 +232,10 @@ Open it with **Settings…** in the menu, or `tile://settings`. It has three tab
 | `tile://profile?id=<id>` / `tile://profile` | overrides the profile / back to automatic |
 | `tile://settings` | opens Settings |
 | `tile://selftest` | applies every layout on every display to a TextEdit window and checks each frame. Writes `selftest.txt`. Moves a window, switches no desktops. |
-| `tile://debug/arrangetest` | the arranger's selftest: TextEdit documents and Calculator across desktops, run twice to check idempotence. Writes `arrangetest.txt`. **Switches desktops: hands off.** |
+| `tile://debug/arrangetest` | the arranger's selftest: TextEdit documents and Calculator across desktops, run twice to check idempotence. It also adds a desktop (and removes it afterwards) and opens a document onto it. Writes `arrangetest.txt`. **Switches desktops: hands off.** |
+| `tile://debug/login` | runs the login arrangement now (the active profile's `onActivate`, launching apps). |
+| `tile://debug/windows` | what Capture would record as `open` for each window. Writes `windows.txt`. |
+| `tile://debug/missioncontrol` | opens Mission Control and describes the Dock's Accessibility tree. Writes `missioncontrol.txt`. |
 | `tile://debug/spaces` | displays, desktops, and which desktop each window is on. Writes `spaces.txt`. |
 | `tile://debug/spike` | the original Spaces experiments. Writes `spike.txt`. **Takes over the mouse.** |
 
@@ -240,6 +261,8 @@ macOS has no public API for Spaces. The spike (`tile://debug/spike`) tested ever
 They're all in `Sources/Tile/Private/SkyLight.swift` and resolved with `dlsym`, so a symbol Apple removes turns into an error, not a crash.
 
 **Writing** through SkyLight (`SLSMoveWindowsToManagedSpace` and the like) does nothing from any process but the Dock, so Tile doesn't. It moves windows the ways listed under Arrangements: Desktop N shortcuts, AX moves across displays, and carrying by the title bar.
+
+**Adding desktops** goes through the Dock's own Accessibility tree while Mission Control is open: `mc` › `mc.display` (with `AXDisplayID`) › `mc.spaces` › `mc.spaces.add`. Each desktop button in `mc.spaces.list` also has an `AXRemoveDesktop` action. See `Sources/Tile/MissionControl.swift`.
 
 ## Homebrew (later)
 

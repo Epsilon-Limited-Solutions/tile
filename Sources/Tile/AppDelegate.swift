@@ -7,12 +7,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let permission = AccessibilityPermission()
     private let configStore = ConfigStore()
-    private lazy var profiles = DisplayProfiles(configStore: configStore) { [unowned self] id in runArrangement(id) }
-    private lazy var commands = WindowCommands(configStore: configStore, profiles: profiles) { [unowned self] id in
+    /// Docking runs the new profile's `onActivate` with only the windows that are open.
+    private lazy var profiles: DisplayProfiles = DisplayProfiles(configStore: configStore) { [unowned self] id in
+        guard !login.isPending, !arranger.isRunning else {
+            return Log.app.info("not running '\(id, privacy: .public)' for the display change: an arrangement is under way")
+        }
+        arranger.run(id, launching: false)
+    }
+    private lazy var commands: WindowCommands = WindowCommands(configStore: configStore, profiles: profiles) { [unowned self] id in
         runArrangement(id)
     }
-    private lazy var hotkeys = HotkeyManager { [unowned self] combo in commands.press(combo) }
-    private lazy var arranger = Arranger(configStore: configStore, profiles: profiles, hotkeys: hotkeys)
+    private lazy var hotkeys: HotkeyManager = HotkeyManager { [unowned self] combo in commands.press(combo) }
+    private lazy var arranger: Arranger = Arranger(configStore: configStore, profiles: profiles, hotkeys: hotkeys)
+    private lazy var login: LoginArrangement = LoginArrangement(configStore: configStore, profiles: profiles, arranger: arranger)
     private lazy var settings = SettingsWindow(configStore: configStore, profiles: profiles, hotkeys: hotkeys) { [unowned self] in
         registerHotkeys()
     }
@@ -32,6 +39,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         permission.requestIfNeeded()
         Log.app.info("Tile launched")
+        if LoginSession.isFirstLaunchThisSession() {
+            login.start()
+        }
     }
 
     /// Loads the config file and re-registers every hotkey. A bad file keeps the last
@@ -94,6 +104,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             SpacesReport.write()
         case .debug(command: "spike", params: _):
             Spike.start()
+        case .debug(command: "login", params: _):
+            login.start()
+        case .debug(command: "windows", params: _):
+            _ = Reports.write("windows.txt", WindowDocuments.report())
+        case .debug(command: "missioncontrol", params: _):
+            Task { _ = Reports.write("missioncontrol.txt", await MissionControl.describe()) }
         case .debug(command: "arrangetest", params: _):
             ArrangeTest.start(arranger: arranger, configStore: configStore, profiles: profiles)
         default:
@@ -186,6 +202,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let submenu = NSMenu()
         submenu.addItem(item("Run Selftest (moves a test window)", #selector(runSelftest)))
         submenu.addItem(item("Run Arrangement Test (switches desktops)", #selector(runArrangeTest)))
+        submenu.addItem(item("Run Login Arrangement (launches apps)", #selector(runLoginArrangement)))
         submenu.addItem(item("Dump Spaces Report", #selector(dumpSpaces)))
         submenu.addItem(item("Open Logs Folder", #selector(openLogs)))
         parent.submenu = submenu
@@ -283,6 +300,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } catch {
             alert("Couldn't change Launch at Login", error.localizedDescription)
         }
+    }
+
+    @objc private func runLoginArrangement() {
+        login.start()
     }
 
     @objc private func runArrangeTest() {

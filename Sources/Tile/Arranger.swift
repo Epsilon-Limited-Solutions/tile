@@ -12,6 +12,7 @@ import TileCore
 ///   target desktop comes up, then bring it back. With one display, carry it instead:
 ///   hold its title bar while switching desktops.
 /// - Launching: show the target desktop first; the app's first window opens there.
+/// - Missing desktops: added with Mission Control's add-desktop button (MissionControl).
 ///
 /// The window server's own move calls are ignored unless the Dock makes them, so
 /// there are none here.
@@ -22,6 +23,8 @@ final class Arranger {
         var placed = 0
         var alreadyInPlace = 0
         var failures: [String] = []
+        /// Windows left alone because their app isn't open and the run doesn't launch.
+        var skipped: [String] = []
         /// Desktop switches made, including carries. A rerun with everything in place makes none.
         var switches = 0
         /// Why the run stopped before placing anything, or was cancelled.
@@ -38,6 +41,7 @@ final class Arranger {
     // hidden (spike 4), which is what lets a second run fix a frame without a switch.
     fileprivate var elements: [CGWindowID: AXUIElement] = [:]
     fileprivate var titles: [CGWindowID: String] = [:]
+    fileprivate var documents: [CGWindowID: String] = [:]
     fileprivate var nonStandard: Set<CGWindowID> = []
     /// For windows that can't take the exact frame (minimum sizes, terminals): what
     /// they took when asked for a frame, so a rerun counts them as in place.
@@ -50,18 +54,22 @@ final class Arranger {
     }
 
     /// Runs the arrangement with this id from the config.
-    func run(_ id: String) {
+    func run(_ id: String, launching: Bool = true) {
         guard let arrangement = configStore.config.arrangements.first(where: { $0.id == id }) else {
             Log.app.info("no arrangement has id '\(id, privacy: .public)'")
             NSSound.beep()
             return
         }
-        Task { _ = await run(arrangement) }
+        Task { _ = await run(arrangement, launching: launching) }
     }
 
     /// Runs `arrangement` (from the config, or built by the arrange test) and returns
     /// what happened. Also written to ~/Library/Logs/Tile/arrange.txt.
-    func run(_ arrangement: Arrangement) async -> Report {
+    ///
+    /// `launching` false only moves windows that are open (docking); true also opens
+    /// apps and windows (login, the menu). `launchTimeout` is how long a launched app
+    /// gets to show its window: at login everything starts at once and it's slow.
+    func run(_ arrangement: Arrangement, launching: Bool = true, launchTimeout: Duration = .seconds(30)) async -> Report {
         guard !isRunning else {
             Log.app.info("an arrangement is already running")
             NSSound.beep()
@@ -71,7 +79,8 @@ final class Arranger {
         defer { isRunning = false }
 
         hud.show("Arranging \(arrangement.id)…", "Esc to cancel")
-        let run = Run(arranger: self, config: configStore.config, arrangement: arrangement, hud: hud)
+        let run = Run(arranger: self, config: configStore.config, arrangement: arrangement, hud: hud,
+                      launching: launching, launchTimeout: launchTimeout)
         hotkeys.holdEscape { [weak run] in
             run?.cancelled = true
             Log.app.info("arrangement cancelled with Esc")
@@ -84,6 +93,7 @@ final class Arranger {
         let summary = report.stopped.map { "\(arrangement.id): \($0)" }
             ?? "Arranged \(arrangement.id): \(report.placed) placed, \(report.alreadyInPlace) already in place"
                + (report.failures.isEmpty ? "" : ", \(report.failures.count) failed")
+               + (report.skipped.isEmpty ? "" : ", \(report.skipped.count) not open")
         report.lines.append("")
         report.lines.append("\(summary); \(report.switches) desktop switches; \(ContinuousClock.now - started)")
         hud.finish(summary, report.failures.joined(separator: "\n"),
@@ -103,6 +113,8 @@ private final class Run {
     private let config: Config
     private let arrangement: Arrangement
     private let hud: ArrangeHUD
+    private let launching: Bool
+    private let launchTimeout: Duration
 
     /// A connected display, with its Spaces identifier and its role in the profile.
     private struct Screen {
@@ -117,19 +129,24 @@ private final class Run {
     private var claimed: Set<CGWindowID> = []
     /// Where a window found by `windowStates` is, by window server terms.
     private var located: [CGWindowID: (pid: pid_t, space: SkyLight.SpaceID, identifier: String)] = [:]
+    /// Desktops the arrangement uses that can't be shown, with why.
+    private var unreachable: [DesktopRef: String] = [:]
 
-    init(arranger: Arranger, config: Config, arrangement: Arrangement, hud: ArrangeHUD) {
+    init(arranger: Arranger, config: Config, arrangement: Arrangement, hud: ArrangeHUD,
+         launching: Bool, launchTimeout: Duration) {
         self.arranger = arranger
         self.config = config
         self.arrangement = arrangement
         self.hud = hud
+        self.launching = launching
+        self.launchTimeout = launchTimeout
     }
 
     // MARK: Run
 
     func perform(match: ProfileMatch?) async {
         line("Tile arrangement '\(arrangement.id)'  \(ISO8601DateFormatter().string(from: Date()))")
-        guard prepare(match: match) else { return }
+        guard await prepare(match: match) else { return }
         let start = Spaces.currentSpaces()
 
         for desktop in arrangement.desktops {
@@ -145,6 +162,9 @@ private final class Run {
                 case .inPlace:
                     report.alreadyInPlace += 1
                     line("\(appName(placement.app)): already in place on \(ref)")
+                case .skipped(let reason):
+                    report.skipped.append("\(appName(placement.app)) → \(ref)")
+                    line("\(appName(placement.app)): \(reason), left for login or the menu to open")
                 case .failed(let reason):
                     let failure = "\(appName(placement.app)) → \(ref): \(reason)"
                     report.failures.append(failure)
@@ -169,9 +189,9 @@ private final class Run {
         }
     }
 
-    /// Checks everything that would stop the run before anything moves. False (with
-    /// `report.stopped` set) when it can't run.
-    private func prepare(match: ProfileMatch?) -> Bool {
+    /// Checks everything that would stop the run before anything moves, and adds the
+    /// desktops it needs. False (with `report.stopped` set) when it can't run.
+    private func prepare(match: ProfileMatch?) async -> Bool {
         func stop(_ reason: String) -> Bool {
             report.stopped = reason
             line("STOPPED: \(reason)")
@@ -195,25 +215,53 @@ private final class Run {
         } else {
             return stop("no profile has id '\(arrangement.profile)'")
         }
-        do {
-            snapshot = try Spaces.snapshot()
-        } catch {
-            return stop("can't read desktops: \(error)")
+        func read() -> String? {
+            do {
+                snapshot = try Spaces.snapshot()
+            } catch {
+                return "can't read desktops: \(error)"
+            }
+            screens = displays.compactMap { info in
+                guard let uuid = info.uuid,
+                      let spaces = snapshot.first(where: { $0.displayIdentifier.caseInsensitiveCompare(uuid) == .orderedSame })
+                else { return nil }
+                return Screen(info: info, identifier: spaces.displayIdentifier, role: roles.first { $0.value == info.id }?.key)
+            }
+            return nil
         }
-        screens = displays.compactMap { info in
-            guard let uuid = info.uuid,
-                  let spaces = snapshot.first(where: { $0.displayIdentifier.caseInsensitiveCompare(uuid) == .orderedSame })
-            else { return nil }
-            return Screen(info: info, identifier: spaces.displayIdentifier, role: roles.first { $0.value == info.id }?.key)
+        func numbering() -> DesktopNumbering {
+            DesktopNumbering(snapshot.map { display in
+                DesktopNumbering.Display(role: screens.first { $0.identifier == display.displayIdentifier }?.role,
+                                         desktops: display.spaces.filter { $0.desktopIndex != nil }.count)
+            })
         }
-        let numbering = DesktopNumbering(snapshot.map { display in
-            DesktopNumbering.Display(role: screens.first { $0.identifier == display.displayIdentifier }?.role,
-                                     desktops: display.spaces.filter { $0.desktopIndex != nil }.count)
-        })
-        let problems = ArrangementCheck.problems(arrangement, numbering: numbering) {
+        if let error = read() { return stop(error) }
+
+        let missing = ArrangementCheck.missingDesktops(arrangement, numbering: numbering())
+        if !missing.isEmpty {
+            for (role, count) in missing.sorted(by: { $0.key < $1.key }) {
+                guard let screen = screens.first(where: { $0.role == role }) else { continue }
+                let have = numbering().desktops(for: role) ?? 0
+                line("\(role) has \(have) desktop\(have == 1 ? "" : "s"), needs \(have + count): adding \(count) in Mission Control")
+                do {
+                    try await MissionControl.addDesktops(count, to: screen.info) {
+                        let spaces = (try? Spaces.snapshot())?.first { $0.displayIdentifier == screen.identifier }
+                        return spaces?.spaces.filter { $0.desktopIndex != nil }.count ?? 0
+                    }
+                } catch {
+                    line("  couldn't: \(error)")
+                }
+            }
+            // Mission Control's closing animation, and the desktop numbers shift.
+            try? await Task.sleep(for: .milliseconds(600))
+            if let error = read() { return stop(error) }
+        }
+        unreachable = ArrangementCheck.unreachable(arrangement, numbering: numbering()) {
             MacSettings.desktopShortcut($0) != nil
         }
-        guard problems.isEmpty else { return stop(problems.joined(separator: "\n")) }
+        for (ref, reason) in unreachable.sorted(by: { ($0.key.role, $0.key.index) < ($1.key.role, $1.key.index) }) {
+            line("can't use \(ref): \(reason)")
+        }
 
         let assigned = MacSettings.dockAssignedApps()
         for app in Set(arrangement.desktops.flatMap { $0.windows.map(\.app) }) where assigned.contains(app.lowercased()) {
@@ -227,10 +275,12 @@ private final class Run {
 
     private enum Outcome {
         case placed, inPlace
+        case skipped(String)
         case failed(String)
     }
 
     private func place(_ placement: WindowPlacement, on ref: DesktopRef) async -> Outcome {
+        if let reason = unreachable[ref] { return .failed(reason) }
         guard let (screen, targetSpace) = locate(ref) else { return .failed("\(ref) doesn't exist") }
         guard let shape = shape(of: placement.layout) else { return .failed("no layout '\(placement.layout)'") }
         guard !config.ignoredApps.contains(placement.app) else { return .failed("it's in ignoredApps") }
@@ -240,12 +290,16 @@ private final class Run {
         func isInPlace(_ window: WindowState) -> Bool {
             window.desktop == ref && fits(window.id, window.frame, frame(shape, on: screen, size: window.frame.size))
         }
+        let opens = placement.open.compactMap {
+            OpenTarget(item: $0, home: NSHomeDirectory(), isFolder: WindowDocuments.isFolder)
+        }
 
         // A title placement may need a look at hidden desktops first; each look makes
         // more titles known, so a few rounds always settle it.
         for _ in 1...4 {
             let states = windowStates(of: placement.app)
-            switch WindowMatching.choose(placement, target: ref, among: states, claimed: claimed, isInPlace: isInPlace) {
+            switch WindowMatching.choose(placement, opens: opens, target: ref, among: states, claimed: claimed,
+                                         isInPlace: isInPlace) {
             case .window(let id):
                 claimed.insert(id)
                 let state = states.first { $0.id == id }!
@@ -258,7 +312,11 @@ private final class Run {
                     _ = await show(space, on: other.identifier)
                 }
             case .open:
-                return await open(placement, appURL: appURL, space: targetSpace, on: screen, shape: shape)
+                guard launching else {
+                    let running = !NSRunningApplication.runningApplications(withBundleIdentifier: placement.app).isEmpty
+                    return .skipped(running ? "its window isn't open" : "not running")
+                }
+                return await open(placement, opens: opens, appURL: appURL, space: targetSpace, on: screen, shape: shape)
             }
         }
         return .failed("couldn't read its window titles")
@@ -303,8 +361,8 @@ private final class Run {
 
     /// Opens the app (or a new window of it) with its desktop showing, so the window
     /// starts there.
-    private func open(_ placement: WindowPlacement, appURL: URL, space: SkyLight.SpaceID, on screen: Screen,
-                      shape: WindowLayout.Shape) async -> Outcome {
+    private func open(_ placement: WindowPlacement, opens: [OpenTarget], appURL: URL, space: SkyLight.SpaceID,
+                      on screen: Screen, shape: WindowLayout.Shape) async -> Outcome {
         guard await show(space, on: screen.identifier) else { return .failed("couldn't show its desktop") }
         let running = NSRunningApplication.runningApplications(withBundleIdentifier: placement.app)
         let before = Set(Spaces.serverWindows().filter { w in running.contains { $0.processIdentifier == w.pid } }.map(\.id))
@@ -323,20 +381,23 @@ private final class Run {
         } catch {
             return .failed("couldn't open it: \(error.localizedDescription)")
         }
-        let regex = placement.title.flatMap { try? NSRegularExpression(pattern: $0) }
+        // A placement that names its window takes it whether it's new or not: opening a
+        // folder an editor already has open brings that window forward instead.
+        let named = placement.title != nil || !opens.isEmpty
+        let recognise = WindowMatching.recogniser(placement, opens: opens) ?? { _, _ in false }
         let pid = app.processIdentifier
-        let element = await WindowWaiter.wait(pid: pid, timeout: .seconds(15)) {
+        let element = await WindowWaiter.wait(pid: pid, timeout: launchTimeout) {
             AX.windows(of: AX.application(pid: pid)).first { element in
-                guard let id = try? SkyLight.windowID(of: element), !before.contains(id),
+                guard let id = try? SkyLight.windowID(of: element), !claimed.contains(id),
+                      named || !before.contains(id),
                       AX.string(element, kAXSubroleAttribute) == kAXStandardWindowSubrole,
                       let frame = AX.frame(of: element), frame.width >= 100, frame.height >= 100 else { return false }
-                guard let regex else { return true }
-                let title = AX.string(element, kAXTitleAttribute) ?? ""
-                return regex.firstMatch(in: title, range: NSRange(title.startIndex..., in: title)) != nil
+                return !named || recognise(AX.string(element, kAXTitleAttribute) ?? "", AX.document(element))
             }
         }
         guard let element, let id = try? SkyLight.windowID(of: element) else {
-            return .failed(regex == nil ? "no window appeared within 15s" : "no window matching \(placement.title!) appeared within 15s")
+            let what = placement.title.map { "matching \($0)" } ?? (placement.open.isEmpty ? "" : "showing \(placement.open.joined(separator: ", "))")
+            return .failed("no window \(what.isEmpty ? "" : what + " ")appeared within \(launchTimeout)")
         }
         arranger.elements[id] = element
         claimed.insert(id)
@@ -470,6 +531,7 @@ private final class Run {
                     arranger.nonStandard.insert(id)
                 } else if let title = AX.string(element, kAXTitleAttribute) {
                     arranger.titles[id] = title
+                    arranger.documents[id] = AX.document(element)
                 }
             }
         }
@@ -485,7 +547,8 @@ private final class Run {
                 let role = screens.first { $0.identifier == display.displayIdentifier }?.role
                 let visible = current[display.displayIdentifier] == space.id
                 return WindowState(id: window.id, app: app, desktop: role.map { DesktopRef(role: $0, index: index) },
-                                   frame: window.bounds, title: arranger.titles[window.id], visible: visible)
+                                   frame: window.bounds, title: arranger.titles[window.id],
+                                   document: arranger.documents[window.id], visible: visible)
             }
             return nil
         }

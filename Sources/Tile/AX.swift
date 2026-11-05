@@ -35,6 +35,16 @@ enum AX {
         return (ref as! AXUIElement)
     }
 
+    static func children(_ element: AXUIElement) -> [AXUIElement] {
+        (value(element, kAXChildrenAttribute) as? [AXUIElement]) ?? []
+    }
+
+    /// The file a window shows (AXDocument, a file URL string), as a path.
+    static func document(_ window: AXUIElement) -> String? {
+        guard let string = string(window, kAXDocumentAttribute), let url = URL(string: string), url.isFileURL else { return nil }
+        return url.path
+    }
+
     static func windows(of app: AXUIElement) -> [AXUIElement] {
         (value(app, kAXWindowsAttribute) as? [AXUIElement]) ?? []
     }

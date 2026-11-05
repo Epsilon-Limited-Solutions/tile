@@ -5,6 +5,9 @@ import TileCore
 /// of TextEdit documents (plus Calculator, when it isn't running, for launch in place)
 /// across the desktops of the connected displays, runs it, checks where every window
 /// landed, runs it again to check a second run switches no desktops, then cleans up.
+/// Covers windows found by document (`open`) and by title, a document opened by the
+/// Arranger onto a desktop that doesn't exist yet (added in Mission Control, removed
+/// afterwards), and a move-only run leaving an unopened document alone.
 /// Writes ~/Library/Logs/Tile/arrangetest.txt.
 ///
 /// It switches desktops and may carry windows by their title bar: hands off while it runs.
@@ -109,10 +112,27 @@ final class ArrangeTest {
             line("\(target.name) opened on \(label(document.id)), going to \(target.ref)")
         }
 
-        var placements = Dictionary(grouping: targets.map { target in
-            (target.ref, WindowPlacement(app: "com.apple.TextEdit", title: "^" + NSRegularExpression.escapedPattern(for: target.name),
-                                         layout: .rect(target.rect)))
+        // a and b are found by their document, c by its title.
+        var placements = Dictionary(grouping: zip(documents, targets).map { document, target in
+            (target.ref, target.name == "tile-arrange-c"
+                ? WindowPlacement(app: "com.apple.TextEdit", title: "^" + NSRegularExpression.escapedPattern(for: target.name),
+                                  layout: .rect(target.rect))
+                : WindowPlacement(app: "com.apple.TextEdit", layout: .rect(target.rect), open: [document.file.path]))
         }, by: \.0).mapValues { $0.map(\.1) }
+
+        // d isn't open, and its desktop doesn't exist: the Arranger adds the desktop and
+        // opens the document there.
+        let sparse = roles.min { $0.desktops.count < $1.desktops.count }!
+        let newDesktop = DesktopRef(role: sparse.role, index: sparse.desktops.count + 1)
+        let newRect = Orientation(of: sparse.display.frame.size) == .portrait
+            ? CGRect(x: 0, y: 0.5, width: 1, height: 0.5) : CGRect(x: 0.5, y: 0, width: 0.5, height: 1)
+        let documentD = FileManager.default.temporaryDirectory.appending(path: "tile-arrange-d.txt")
+        let documentE = FileManager.default.temporaryDirectory.appending(path: "tile-arrange-e.txt")
+        for file in [documentD, documentE] {
+            try? "Tile arrange test. Safe to close.\n".write(to: file, atomically: true, encoding: .utf8)
+        }
+        placements[newDesktop] = [WindowPlacement(app: "com.apple.TextEdit", layout: .rect(newRect), open: [documentD.path])]
+        line("tile-arrange-d isn't open, going to \(newDesktop), which doesn't exist yet")
         if launchCalculator {
             placements[calculatorTarget.ref, default: []].append(
                 WindowPlacement(app: calculator, layout: .rect(calculatorTarget.rect)))
@@ -132,6 +152,24 @@ final class ArrangeTest {
         for (document, target) in zip(documents, targets) {
             verify(document.id, target, geometry: geometry, frame: true)
         }
+        let sparseDesktops = { [sparse] in
+            ((try? Spaces.snapshot())?.first { $0.displayIdentifier.caseInsensitiveCompare(sparse.display.uuid ?? "") == .orderedSame }?
+                .spaces.filter { $0.desktopIndex != nil }) ?? []
+        }
+        let added = sparseDesktops().count == sparse.desktops.count + 1
+        check("first run added \(newDesktop)", added, "\(sparse.role) has \(sparseDesktops().count) desktops")
+        // The new desktop is hidden again, so AX can't see d: it's the TextEdit window there.
+        let newSpace = added ? sparseDesktops().last!.id : 0
+        let textEditPIDs = Set(NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.TextEdit").map(\.processIdentifier))
+        let windowD = Spaces.serverWindows().first { window in
+            textEditPIDs.contains(window.pid) && (try? SkyLight.spaces(forWindow: window.id)) == [newSpace]
+        }
+        if let windowD {
+            verify(windowD.id, Target(name: "tile-arrange-d", ref: newDesktop, space: newSpace,
+                                      rect: newRect, display: sparse.display), geometry: geometry, frame: true)
+        } else {
+            check("tile-arrange-d opened on \(newDesktop)", false, "no TextEdit window there")
+        }
         if launchCalculator,
            let app = NSRunningApplication.runningApplications(withBundleIdentifier: calculator).first,
            let window = Spaces.serverWindows().first(where: { $0.pid == app.processIdentifier }) {
@@ -146,9 +184,49 @@ final class ArrangeTest {
               "\(secondRun.placed) placed, \(secondRun.alreadyInPlace) in place")
         check("second run switched no desktops", secondRun.switches == 0, "\(secondRun.switches) switches")
 
+        line()
+        line("== move-only run (docking): an unopened document stays unopened ==")
+        let moveOnly = Arrangement(id: "arrangetest-move-only", profile: match.profile.id, desktops: [
+            DesktopPlacement(display: first.role, desktop: 1, windows: [
+                WindowPlacement(app: "com.apple.TextEdit", layout: .rect(CGRect(x: 0, y: 0, width: 1, height: 1)),
+                                open: [documentE.path]),
+            ]),
+        ])
+        let thirdRun = await arranger.run(moveOnly, launching: false)
+        log(thirdRun)
+        check("move-only run skipped it", thirdRun.skipped.count == 1 && thirdRun.placed == 0 && thirdRun.failures.isEmpty,
+              "\(thirdRun.skipped.count) skipped, \(thirdRun.placed) placed, \(thirdRun.failures.count) failed")
+        check("move-only run opened nothing", textEditWindow(showing: documentE.path) == nil, "it opened tile-arrange-e")
+
         if launchCalculator {
             NSRunningApplication.runningApplications(withBundleIdentifier: calculator).first?.terminate()
         }
+        if added, let identifier = (try? Spaces.snapshot())?.first(where: { $0.spaces.contains { $0.id == newSpace } })?.displayIdentifier {
+            await show(newSpace, on: identifier)
+        }
+        if let window = textEditWindow(showing: documentD.path) {
+            AX.pressCloseButton(window.element)
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+        for file in [documentD, documentE] { try? FileManager.default.removeItem(at: file) }
+        if added {
+            do {
+                try await MissionControl.removeLastDesktop(of: sparse.display) { sparseDesktops().count }
+                line("removed \(newDesktop) again")
+            } catch {
+                line("couldn't remove \(newDesktop): \(error); remove it in Mission Control")
+            }
+        }
+    }
+
+    private func textEditWindow(showing path: String) -> (element: AXUIElement, id: CGWindowID)? {
+        for app in NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.TextEdit") {
+            for element in AX.windows(of: AX.application(pid: app.processIdentifier))
+            where AX.document(element).map({ ($0 as NSString).standardizingPath }) == (path as NSString).standardizingPath {
+                if let id = try? SkyLight.windowID(of: element) { return (element, id) }
+            }
+        }
+        return nil
     }
 
     private func cleanUp(_ documents: [TestDocument]) {

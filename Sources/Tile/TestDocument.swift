@@ -6,7 +6,7 @@ struct TestDocument {
     let element: AXUIElement
     let id: CGWindowID
     let pid: pid_t
-    private let file: URL
+    let file: URL
     private let quitTextEdit: Bool
 
     var window: WindowMover.Window { WindowMover.Window(element: element, pid: pid, id: id) }

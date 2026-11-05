@@ -4,6 +4,8 @@ import TileCore
 /// "Capture current desktops into arrangement…": records the desktop showing on each
 /// display of the active profile, with every standard window on it, as an arrangement
 /// in the config. Arrange by hand, capture, swipe to the next desktop, capture again.
+/// A window that shows a document, workspace folder or working directory records it
+/// as `open`, so the Arranger reopens that exact window (WindowDocuments).
 @MainActor
 enum Capture {
     struct Failure: Error, CustomStringConvertible {
@@ -85,8 +87,10 @@ enum Capture {
                       let spaces = try? SkyLight.spaces(forWindow: id), spaces.count == 1,
                       desktops.contains(where: { $0.space == spaces[0] })
                 else { continue }
+                let title = AX.string(element, kAXTitleAttribute)
                 windows[spaces[0], default: []].append(
-                    CapturedWindow(app: bundleID, title: AX.string(element, kAXTitleAttribute), frame: frame))
+                    CapturedWindow(app: bundleID, title: title, frame: frame,
+                                   open: WindowDocuments.openItem(app: bundleID, window: element, title: title)))
             }
         }
         let counts = Dictionary(windows.values.flatMap { $0 }.map { ($0.app, 1) }, uniquingKeysWith: +)

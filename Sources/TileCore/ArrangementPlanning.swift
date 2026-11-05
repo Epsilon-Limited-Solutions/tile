@@ -55,37 +55,106 @@ public struct DesktopNumbering: Equatable, Sendable {
 }
 
 public enum ArrangementCheck {
-    /// What stops `arrangement` from running, each as an instruction. Empty when it can run.
-    /// Every desktop it places windows on or ends on needs a working Desktop N shortcut,
-    /// because that's the only way Tile can show it.
-    public static func problems(_ arrangement: Arrangement, numbering: DesktopNumbering,
-                                shortcutEnabled: (Int) -> Bool) -> [String] {
-        var problems: [String] = []
-        let needed = arrangement.desktopsNeeded
-        for role in needed.keys.sorted() {
-            guard let have = numbering.desktops(for: role) else {
-                problems.append("no display is playing '\(role)'")
-                continue
-            }
-            let want = needed[role]!
-            if have < want {
-                let missing = want - have == 1 ? "one" : "\(want - have)"
-                problems.append("\(role) needs \(want) desktops, has \(have): add \(missing) in Mission Control")
-            }
+    /// How many desktops each display role is short of, for the arrangement's
+    /// placements and `endOn`. macOS drops an external display's extra desktops when
+    /// it disconnects, so a redocked display often comes back with one.
+    public static func missingDesktops(_ arrangement: Arrangement, numbering: DesktopNumbering) -> [String: Int] {
+        var missing: [String: Int] = [:]
+        for (role, want) in arrangement.desktopsNeeded {
+            if let have = numbering.desktops(for: role), have < want { missing[role] = want - have }
         }
-        guard problems.isEmpty else { return problems }
+        return missing
+    }
 
+    /// The desktops the arrangement uses that Tile can't show, each with why. Every
+    /// desktop it places windows on or ends on needs a working Desktop N shortcut,
+    /// because that's the only way Tile can show it. Windows bound for these desktops
+    /// fail; the rest of the arrangement still runs.
+    public static func unreachable(_ arrangement: Arrangement, numbering: DesktopNumbering,
+                                   shortcutEnabled: (Int) -> Bool) -> [DesktopRef: String] {
+        var result: [DesktopRef: String] = [:]
         let targets = Set(arrangement.desktops.map { DesktopRef(role: $0.display, index: $0.desktop) }
             + arrangement.endOn.map { DesktopRef(role: $0.key, index: $0.value) })
-        for target in targets.sorted(by: { ($0.role, $0.index) < ($1.role, $1.index) }) {
-            guard let number = numbering.number(of: target) else { continue }
+        for target in targets {
+            guard let have = numbering.desktops(for: target.role) else {
+                result[target] = "no display is playing '\(target.role)'"
+                continue
+            }
+            guard let number = numbering.number(of: target) else {
+                let missing = target.index - have == 1 ? "one" : "\(target.index - have)"
+                result[target] = "\(target.role) has \(have) desktop\(have == 1 ? "" : "s"): add \(missing) in Mission Control"
+                continue
+            }
             if number > DesktopNumbering.shortcutLimit {
-                problems.append("\(target) is Desktop \(number), and macOS only has shortcuts up to Desktop \(DesktopNumbering.shortcutLimit)")
+                result[target] = "it's Desktop \(number), and macOS only has shortcuts up to Desktop \(DesktopNumbering.shortcutLimit)"
             } else if !shortcutEnabled(number) {
-                problems.append("\(target) is Desktop \(number), and its shortcut is off: turn on System Settings > Keyboard > Keyboard Shortcuts > Mission Control > Switch to Desktop \(number)")
+                result[target] = "it's Desktop \(number), and its shortcut is off: turn on System Settings > Keyboard > Keyboard Shortcuts > Mission Control > Switch to Desktop \(number)"
             }
         }
-        return problems
+        return result
+    }
+}
+
+/// A file or folder a window shows, for placements that `open` one: the Arranger
+/// opens it to make the window, and recognises the window by it afterwards.
+public struct OpenTarget: Equatable, Sendable {
+    /// Absolute, standardized, no trailing slash.
+    public let path: String
+    public let isFolder: Bool
+    /// `path` with the home folder as `~`, as terminals put it in titles.
+    public let tildePath: String
+
+    /// Nil for a URL that isn't a file (a web page): those are opened, never recognised.
+    public init?(item: String, home: String, isFolder: (String) -> Bool) {
+        let raw: String
+        if item.hasPrefix("file://") {
+            guard let url = URL(string: item), url.isFileURL else { return nil }
+            raw = url.path
+        } else if item.contains("://") {
+            return nil
+        } else if item == "~" || item.hasPrefix("~/") {
+            raw = home + item.dropFirst()
+        } else {
+            raw = item
+        }
+        guard raw.hasPrefix("/") else { return nil }
+        let path = Self.standardize(raw)
+        self.path = path
+        self.isFolder = isFolder(path)
+        let home = Self.standardize(home)
+        tildePath = path == home ? "~" : path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path
+    }
+
+    /// Whether a window showing `document` (a file path; nil when it shows none) with
+    /// `title` is this target's window. A folder matches a document inside it, or a
+    /// title naming it (editors put the workspace folder's name in the title, and
+    /// terminals the working directory); a file matches its document, or its name in
+    /// the title when the window doesn't say which document it shows.
+    public func matches(document: String?, title: String) -> Bool {
+        if let document {
+            let document = Self.standardize(document)
+            if document == path || (isFolder && document.hasPrefix(path + "/")) { return true }
+            if !isFolder { return false }
+        }
+        let name = (path as NSString).lastPathComponent
+        return Self.titleSegments(title).contains { $0 == name || $0 == path || $0 == tildePath }
+    }
+
+    /// The parts of a window title: the whole title, and each piece between the
+    /// separators apps use ("file — folder — App", "dir - zsh", "Doc | App").
+    public static func titleSegments(_ title: String) -> [String] {
+        var segments = [title.trimmingCharacters(in: .whitespaces)]
+        var pieces = [title]
+        for separator in [" — ", " – ", " - ", " | "] {
+            pieces = pieces.flatMap { $0.components(separatedBy: separator) }
+        }
+        if pieces.count > 1 { segments += pieces.map { $0.trimmingCharacters(in: .whitespaces) } }
+        return segments.filter { !$0.isEmpty }
+    }
+
+    static func standardize(_ path: String) -> String {
+        let standardized = (path as NSString).standardizingPath
+        return standardized.count > 1 && standardized.hasSuffix("/") ? String(standardized.dropLast()) : standardized
     }
 }
 
@@ -100,15 +169,19 @@ public struct WindowState: Equatable, Sendable {
     public let frame: CGRect
     /// Nil when unknown: AX only sees windows on the desktops showing now.
     public let title: String?
+    /// The file it shows (AXDocument), read along with the title; nil when unknown or none.
+    public let document: String?
     /// On a desktop that's showing now.
     public let visible: Bool
 
-    public init(id: UInt32, app: String, desktop: DesktopRef?, frame: CGRect, title: String?, visible: Bool) {
+    public init(id: UInt32, app: String, desktop: DesktopRef?, frame: CGRect, title: String?,
+                document: String? = nil, visible: Bool) {
         self.id = id
         self.app = app
         self.desktop = desktop
         self.frame = frame
         self.title = title
+        self.document = document
         self.visible = visible
     }
 }
@@ -124,23 +197,25 @@ public enum WindowChoice: Equatable, Sendable {
 public enum WindowMatching {
     /// Picks the window for `placement`, never one in `claimed`. Prefers, in order: a
     /// window already in place, one already on the target desktop, one on a desktop
-    /// showing now (no switch needed to reach it), then any. A `title` placement only
-    /// takes a window whose title matches, except that a window of unknown title
-    /// already in place is assumed to be the one placed there last time, so a second
-    /// run doesn't have to visit desktops to read titles.
-    public static func choose(_ placement: WindowPlacement, target: DesktopRef, among windows: [WindowState],
-                              claimed: Set<UInt32>, isInPlace: (WindowState) -> Bool) -> WindowChoice {
+    /// showing now (no switch needed to reach it), then any.
+    ///
+    /// A placement with a `title` or with files and folders to `open` (`opens`) only
+    /// takes a window it recognises: title matching, and showing one of `opens`.
+    /// Except that a window whose title is unknown, already in place, is assumed to be
+    /// the one placed there last time, so a second run doesn't have to visit desktops
+    /// to read titles.
+    public static func choose(_ placement: WindowPlacement, opens: [OpenTarget] = [], target: DesktopRef,
+                              among windows: [WindowState], claimed: Set<UInt32>,
+                              isInPlace: (WindowState) -> Bool) -> WindowChoice {
         let candidates = windows.filter { $0.app == placement.app && !claimed.contains($0.id) }
         func best(_ list: [WindowState]) -> WindowState? {
             list.first(where: isInPlace) ?? list.first { $0.desktop == target } ?? list.first(where: \.visible) ?? list.first
         }
-        guard let pattern = placement.title else {
+        guard placement.title != nil || !opens.isEmpty else {
             return best(candidates).map { .window($0.id) } ?? .open
         }
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return .open }
-        let known = candidates.filter { window in
-            window.title.map { regex.firstMatch(in: $0, range: NSRange($0.startIndex..., in: $0)) != nil } ?? false
-        }
+        guard let recognise = recogniser(placement, opens: opens) else { return .open }
+        let known = candidates.filter { window in window.title.map { recognise($0, window.document) } ?? false }
         if let window = best(known) { return .window(window.id) }
         let unknown = candidates.filter { $0.title == nil }
         if let window = unknown.first(where: isInPlace) { return .window(window.id) }
@@ -150,6 +225,22 @@ public enum WindowMatching {
         }
         return desktops.isEmpty ? .open : .needsTitles(desktops)
     }
+
+    /// Whether a window with this title and document is `placement`'s window, or nil
+    /// when the title pattern doesn't compile. Always true for a placement that says
+    /// neither.
+    public static func recogniser(_ placement: WindowPlacement, opens: [OpenTarget])
+        -> ((_ title: String, _ document: String?) -> Bool)? {
+        var regex: NSRegularExpression?
+        if let pattern = placement.title {
+            guard let compiled = try? NSRegularExpression(pattern: pattern) else { return nil }
+            regex = compiled
+        }
+        return { title, document in
+            if let regex, regex.firstMatch(in: title, range: NSRange(title.startIndex..., in: title)) == nil { return false }
+            return opens.isEmpty || opens.contains { $0.matches(document: document, title: title) }
+        }
+    }
 }
 
 /// A window found by Capture on a display's showing desktop.
@@ -158,11 +249,15 @@ public struct CapturedWindow: Equatable, Sendable {
     public let title: String?
     /// AX coordinates.
     public let frame: CGRect
+    /// The file or folder that brings this window back when opened with the app
+    /// (a document, an editor's workspace folder, a terminal's directory), or nil.
+    public let open: String?
 
-    public init(app: String, title: String?, frame: CGRect) {
+    public init(app: String, title: String?, frame: CGRect, open: String? = nil) {
         self.app = app
         self.title = title
         self.frame = frame
+        self.open = open
     }
 }
 
@@ -175,10 +270,11 @@ public enum CaptureBuilder {
     /// 0.001: the rects that put each window back where it is once `LayoutEngine`
     /// adds the gaps. An edge within the outer gap of the screen edge counts as on it.
     ///
-    /// A title is kept, as an exact-match pattern, only when the app has another
-    /// window in the same capture: titles change (web pages, documents, Slack
-    /// channels), and a stale one would stop the window matching.
-    /// `appsWithSeveralWindows` covers every desktop captured at once.
+    /// A window that knows its file or folder gets it as `open`, which both reopens
+    /// it and recognises it later. Otherwise a title is kept, as an exact-match
+    /// pattern, only when the app has another window in the same capture: titles
+    /// change (web pages, documents, Slack channels), and a stale one would stop the
+    /// window matching. `appsWithSeveralWindows` covers every desktop captured at once.
     public static func placements(_ windows: [CapturedWindow], visibleFrame: CGRect, gaps: Gaps,
                                   appsWithSeveralWindows: Set<String>) -> [WindowPlacement] {
         let area = visibleFrame.insetBy(dx: gaps.outer, dy: gaps.outer)
@@ -201,6 +297,9 @@ public enum CaptureBuilder {
             guard maxX > minX, maxY > minY else { return nil }
             let rect = CGRect(x: minX, y: minY, width: ((maxX - minX) * 1000).rounded() / 1000,
                               height: ((maxY - minY) * 1000).rounded() / 1000)
+            if let open = window.open {
+                return WindowPlacement(app: window.app, layout: .rect(rect), open: [open])
+            }
             let title = appsWithSeveralWindows.contains(window.app)
                 ? window.title.flatMap { $0.isEmpty ? nil : "^" + NSRegularExpression.escapedPattern(for: $0) + "$" }
                 : nil

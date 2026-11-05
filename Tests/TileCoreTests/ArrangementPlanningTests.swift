@@ -40,36 +40,97 @@ struct ArrangementCheckTests {
                     desktops: desktops.map { DesktopPlacement(display: $0.0, desktop: $0.1, windows: []) })
     }
 
+    let on: (Int) -> Bool = { _ in true }
+
     @Test func runnable() {
-        #expect(ArrangementCheck.problems(arrangement([("laptop", 1), ("vertical-left", 3)]),
-                                          numbering: numbering, shortcutEnabled: { _ in true }).isEmpty)
+        let work = arrangement([("laptop", 1), ("vertical-left", 3)])
+        #expect(ArrangementCheck.missingDesktops(work, numbering: numbering).isEmpty)
+        #expect(ArrangementCheck.unreachable(work, numbering: numbering, shortcutEnabled: on).isEmpty)
     }
 
-    @Test func tooFewDesktopsSaysHowManyToAdd() {
-        let problems = ArrangementCheck.problems(arrangement([("vertical-right", 3)], endOn: ["laptop": 7]),
-                                                 numbering: numbering, shortcutEnabled: { _ in true })
-        #expect(problems == ["laptop needs 7 desktops, has 5: add 2 in Mission Control",
-                             "vertical-right needs 3 desktops, has 2: add one in Mission Control"])
+    @Test func missingDesktopsCountsWhatEachRoleIsShort() {
+        let work = arrangement([("vertical-right", 3), ("vertical-left", 2)], endOn: ["laptop": 7])
+        #expect(ArrangementCheck.missingDesktops(work, numbering: numbering) == ["laptop": 2, "vertical-right": 1])
+    }
+
+    @Test func desktopsThatDontExistAreUnreachable() {
+        let work = arrangement([("vertical-right", 3), ("laptop", 1)], endOn: ["laptop": 7])
+        #expect(ArrangementCheck.unreachable(work, numbering: numbering, shortcutEnabled: on) == [
+            DesktopRef(role: "vertical-right", index: 3): "vertical-right has 2 desktops: add one in Mission Control",
+            DesktopRef(role: "laptop", index: 7): "laptop has 5 desktops: add 2 in Mission Control",
+        ])
     }
 
     @Test func missingRole() {
-        let problems = ArrangementCheck.problems(arrangement([("tv", 1)]), numbering: numbering, shortcutEnabled: { _ in true })
-        #expect(problems == ["no display is playing 'tv'"])
+        #expect(ArrangementCheck.unreachable(arrangement([("tv", 1)]), numbering: numbering, shortcutEnabled: on)
+                == [DesktopRef(role: "tv", index: 1): "no display is playing 'tv'"])
+        #expect(ArrangementCheck.missingDesktops(arrangement([("tv", 1)]), numbering: numbering).isEmpty)
     }
 
     @Test func everyTargetAndEndOnDesktopNeedsItsShortcut() {
-        let problems = ArrangementCheck.problems(arrangement([("vertical-left", 2), ("laptop", 1)], endOn: ["vertical-right": 1]),
-                                                 numbering: numbering, shortcutEnabled: { $0 != 9 && $0 != 6 })
-        #expect(problems == [
-            "vertical-left desktop 2 is Desktop 9, and its shortcut is off: turn on System Settings > Keyboard > Keyboard Shortcuts > Mission Control > Switch to Desktop 9",
-            "vertical-right desktop 1 is Desktop 6, and its shortcut is off: turn on System Settings > Keyboard > Keyboard Shortcuts > Mission Control > Switch to Desktop 6",
+        let unreachable = ArrangementCheck.unreachable(arrangement([("vertical-left", 2), ("laptop", 1)], endOn: ["vertical-right": 1]),
+                                                       numbering: numbering, shortcutEnabled: { $0 != 9 && $0 != 6 })
+        #expect(unreachable == [
+            DesktopRef(role: "vertical-left", index: 2): "it's Desktop 9, and its shortcut is off: turn on System Settings > Keyboard > Keyboard Shortcuts > Mission Control > Switch to Desktop 9",
+            DesktopRef(role: "vertical-right", index: 1): "it's Desktop 6, and its shortcut is off: turn on System Settings > Keyboard > Keyboard Shortcuts > Mission Control > Switch to Desktop 6",
         ])
     }
 
     @Test func desktopsPastSixteenHaveNoShortcut() {
         let big = DesktopNumbering([.init(role: "laptop", desktops: 16), .init(role: "tv", desktops: 2)])
-        let problems = ArrangementCheck.problems(arrangement([("tv", 1)]), numbering: big, shortcutEnabled: { _ in true })
-        #expect(problems == ["tv desktop 1 is Desktop 17, and macOS only has shortcuts up to Desktop 16"])
+        #expect(ArrangementCheck.unreachable(arrangement([("tv", 1)]), numbering: big, shortcutEnabled: on)
+                == [DesktopRef(role: "tv", index: 1): "it's Desktop 17, and macOS only has shortcuts up to Desktop 16"])
+    }
+}
+
+struct OpenTargetTests {
+    let home = "/Users/tom"
+    func target(_ item: String, folder: Bool) -> OpenTarget? {
+        OpenTarget(item: item, home: home, isFolder: { _ in folder })
+    }
+
+    @Test func pathsAreExpandedAndStandardized() {
+        #expect(target("~/epsilon/tile/", folder: true)?.path == "/Users/tom/epsilon/tile")
+        #expect(target("~/epsilon/tile", folder: true)?.tildePath == "~/epsilon/tile")
+        #expect(target("file:///Users/tom/notes.txt", folder: false)?.path == "/Users/tom/notes.txt")
+        #expect(target("/tmp/../tmp/x", folder: true)?.path == "/tmp/x")
+        #expect(target("~", folder: true)?.tildePath == "~")
+    }
+
+    @Test func webAndRelativeItemsAreNeverRecognised() {
+        #expect(target("https://example.com", folder: false) == nil)
+        #expect(target("notes.txt", folder: false) == nil)
+    }
+
+    @Test func folderMatchesDocumentInsideItOrItsNameInTheTitle() {
+        let tile = target("~/epsilon/applications/tile", folder: true)!
+        // VS Code: AXDocument is the active file, the title names the workspace folder.
+        #expect(tile.matches(document: "/Users/tom/epsilon/applications/tile/Sources/Tile/Arranger.swift",
+                             title: "Arranger.swift — tile"))
+        #expect(tile.matches(document: nil, title: "Welcome — tile"))
+        // A file from elsewhere open in the tile window: the title still says tile.
+        #expect(tile.matches(document: "/Users/tom/.config/tile/config.json", title: "config.json — tile"))
+        // Warp and other terminals: the directory in the title.
+        #expect(tile.matches(document: nil, title: "~/epsilon/applications/tile"))
+        #expect(!tile.matches(document: "/Users/tom/epsilon/applications/momentum/App.swift", title: "App.swift — momentum"))
+        #expect(!tile.matches(document: nil, title: "tiles — Code"))
+        // Not a prefix of a sibling folder.
+        #expect(!tile.matches(document: "/Users/tom/epsilon/applications/tile-old/x.swift", title: "x.swift — tile-old"))
+    }
+
+    @Test func fileMatchesItsDocumentOrItsNameWhenTheWindowDoesntSay() {
+        let notes = target("/Users/tom/notes.txt", folder: false)!
+        #expect(notes.matches(document: "/Users/tom/notes.txt", title: "anything"))
+        #expect(notes.matches(document: nil, title: "notes.txt"))
+        #expect(!notes.matches(document: "/Users/tom/old/notes.txt", title: "notes.txt"))
+    }
+
+    @Test func titleSegmentsSplitOnTheUsualSeparators() {
+        #expect(OpenTarget.titleSegments("a.swift — tile — Visual Studio Code")
+                == ["a.swift — tile — Visual Studio Code", "a.swift", "tile", "Visual Studio Code"])
+        #expect(OpenTarget.titleSegments("~/src - zsh") == ["~/src - zsh", "~/src", "zsh"])
+        #expect(OpenTarget.titleSegments("plain") == ["plain"])
+        #expect(OpenTarget.titleSegments("") == [])
     }
 }
 
@@ -80,12 +141,13 @@ struct WindowMatchingTests {
 
     func window(_ id: UInt32, _ app: String = "com.tinyspeck.slackmacgap", on desktop: DesktopRef?,
                 frame: CGRect = .init(x: 0, y: 0, width: 800, height: 600), title: String? = nil,
-                visible: Bool = false) -> WindowState {
-        WindowState(id: id, app: app, desktop: desktop, frame: frame, title: title, visible: visible)
+                document: String? = nil, visible: Bool = false) -> WindowState {
+        WindowState(id: id, app: app, desktop: desktop, frame: frame, title: title, document: document, visible: visible)
     }
 
     func choose(_ placement: WindowPlacement, _ windows: [WindowState], claimed: Set<UInt32> = []) -> WindowChoice {
-        WindowMatching.choose(placement, target: target, among: windows, claimed: claimed) {
+        let opens = placement.open.compactMap { OpenTarget(item: $0, home: "/Users/tom", isFolder: { !$0.hasSuffix(".txt") }) }
+        return WindowMatching.choose(placement, opens: opens, target: target, among: windows, claimed: claimed) {
             $0.desktop == target && $0.frame == frame
         }
     }
@@ -128,6 +190,37 @@ struct WindowMatchingTests {
         #expect(choose(code, [hidden1, hidden2, hidden3, nowhere])
                 == .needsTitles([elsewhere, DesktopRef(role: "laptop", index: 3)]))
         #expect(choose(code, [nowhere]) == .open)
+    }
+
+    let tile = WindowPlacement(app: "com.microsoft.VSCode", layout: .named("full"), open: ["~/src/tile"])
+
+    @Test func openPlacementTakesTheWindowShowingIt() {
+        let momentum = window(1, "com.microsoft.VSCode", on: target, frame: frame, title: "App.swift — momentum",
+                              document: "/Users/tom/src/momentum/App.swift", visible: true)
+        let mine = window(2, "com.microsoft.VSCode", on: elsewhere, title: "Arranger.swift — tile",
+                          document: "/Users/tom/src/tile/Arranger.swift", visible: true)
+        #expect(choose(tile, [momentum, mine]) == .window(2))
+        #expect(choose(tile, [momentum]) == .open)
+    }
+
+    @Test func openPlacementWithHiddenWindowsVisitsTheirDesktops() {
+        let hidden = window(1, "com.microsoft.VSCode", on: elsewhere)
+        #expect(choose(tile, [hidden]) == .needsTitles([elsewhere]))
+    }
+
+    @Test func webPagesInOpenDontNameAWindow() {
+        // Nothing to recognise it by: any window of the app does.
+        let page = WindowPlacement(app: "com.apple.Safari", layout: .named("full"), open: ["https://example.com"])
+        #expect(choose(page, [window(1, "com.apple.Safari", on: elsewhere, title: "Example", visible: true)]) == .window(1))
+    }
+
+    @Test func titleAndOpenMustBothMatch() {
+        let both = WindowPlacement(app: "com.microsoft.VSCode", title: "^Arr", layout: .named("full"), open: ["~/src/tile"])
+        let wrongTitle = window(1, "com.microsoft.VSCode", on: target, title: "Main.swift — tile",
+                                document: "/Users/tom/src/tile/Main.swift", visible: true)
+        let right = window(2, "com.microsoft.VSCode", on: elsewhere, title: "Arranger.swift — tile",
+                           document: "/Users/tom/src/tile/Arranger.swift", visible: true)
+        #expect(choose(both, [wrongTitle, right]) == .window(2))
     }
 
     @Test func unknownTitleAlreadyInPlaceIsTrusted() {
@@ -184,6 +277,14 @@ struct CaptureBuilderTests {
         let regex = try! NSRegularExpression(pattern: placements[0].title!)
         let title = "epsilon (main) — Code"
         #expect(regex.firstMatch(in: title, range: NSRange(title.startIndex..., in: title)) != nil)
+    }
+
+    @Test func aWindowThatKnowsItsFolderOpensItInsteadOfATitle() {
+        let windows = [CapturedWindow(app: "code", title: "Arranger.swift — tile", frame: visible, open: "/Users/tom/src/tile"),
+                       CapturedWindow(app: "code", title: "Welcome", frame: visible)]
+        let placements = CaptureBuilder.placements(windows, visibleFrame: visible, gaps: Gaps(), appsWithSeveralWindows: ["code"])
+        #expect(placements.map(\.open) == [["/Users/tom/src/tile"], []])
+        #expect(placements.map(\.title) == [nil, "^Welcome$"])
     }
 
     @Test func mergeReplacesRecapturedDesktopsAndKeepsTheRest() throws {
