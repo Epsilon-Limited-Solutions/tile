@@ -16,7 +16,7 @@ You need macOS 15 or later and Xcode, at `/Applications/Xcode.app` by default.
 ```sh
 ./build.sh install   # release build, sign, copy to ~/Applications/Tile.app, relaunch
 ./build.sh test      # unit tests (swift test)
-./build.sh release   # signed dist/Tile-<version>.zip + .sha256, for a Homebrew cask later
+./build.sh release   # Developer ID build, notarized: dist/Tile-<version>.zip + .sha256 for Homebrew
 ```
 
 `build.sh` signs with the `Apple Development` identity. To use another one, set `TILE_SIGN_IDENTITY`.
@@ -264,23 +264,32 @@ They're all in `Sources/Tile/Private/SkyLight.swift` and resolved with `dlsym`, 
 
 **Adding desktops** goes through the Dock's own Accessibility tree while Mission Control is open: `mc` › `mc.display` (with `AXDisplayID`) › `mc.spaces` › `mc.spaces.add`. Each desktop button in `mc.spaces.list` also has an `AXRemoveDesktop` action. See `Sources/Tile/MissionControl.swift`.
 
-## Homebrew (later)
+## Install with Homebrew
 
-The plan:
+```sh
+brew install --cask Epsilon-Limited-Solutions/tap/tile
+```
 
-- a personal tap, `Epsilon-Limited-Solutions/homebrew-tap`
-- `Casks/tile.rb` pointing at the GitHub release zip from `./build.sh release`, with its sha256
+The cask lives in [Epsilon-Limited-Solutions/homebrew-tap](https://github.com/Epsilon-Limited-Solutions/homebrew-tap) and installs a Developer ID-signed, notarized build from this repo's GitHub Releases. `brew upgrade` picks up new releases.
 
-**Why it can't ship as is.** A downloaded zip gets the quarantine flag. Gatekeeper refuses an app signed with an Apple Development certificate, which only works for builds made on this machine.
+### Cutting a release
 
-**What `build.sh release` would need:**
+1. Put the new version in `VERSION`, commit, tag it `v<version>`, and push the tag.
+2. The [Release workflow](.github/workflows/release.yml) builds on a macOS runner, signs with the Developer ID certificate, notarizes and staples, publishes `Tile-<version>.zip` and its sha256 to GitHub Releases, and rewrites `Casks/tile.rb` in the tap with `scripts/cask.sh`.
 
-1. **Sign with a Developer ID Application certificate.** `TILE_SIGN_IDENTITY="Developer ID Application: …"`. The script already uses the hardened runtime and a secure timestamp for releases.
-2. **Notarize the zip:** `xcrun notarytool submit dist/Tile-<version>.zip --keychain-profile <profile> --wait`
-3. **Staple the ticket to the app** with `xcrun stapler staple dist/Tile.app`. Then zip it again and recompute the sha256, since stapling changes the bundle.
-4. **Upload to GitHub,** then bump `version` and `sha256` in the cask.
+The workflow needs these repository secrets: `DEVELOPER_ID_P12_BASE64`, `DEVELOPER_ID_P12_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`, and `TAP_GITHUB_TOKEN`. The comment at the top of the workflow says what each one is.
 
-A Developer ID build has a different signature from the Apple Development one. The first run after switching needs Accessibility granted again (or `tccutil reset`).
+To release from this machine instead, with the Developer ID certificate in the keychain and a `tile-notary` notarytool profile:
+
+```sh
+./build.sh release && gh release create v$(cat VERSION) dist/Tile-*.zip dist/Tile-*.zip.sha256 --generate-notes
+```
+
+then write `scripts/cask.sh <version> <sha256>` into the tap's `Casks/tile.rb`.
+
+**Why Developer ID.** A downloaded zip carries the quarantine flag, and Gatekeeper only opens a quarantined app that's signed with a Developer ID certificate and notarized. The Apple Development certificate `build.sh install` uses works only for builds made on the machine that holds it. `build.sh release` refuses to notarize anything else; `TILE_NOTARIZE=0` builds a local-only zip for testing the packaging.
+
+**Switching builds.** A Developer ID build has a different signature from a local Apple Development build. The first run after switching between them needs Accessibility granted again (or `tccutil reset Accessibility com.epsilonlimited.tile`).
 
 ## Layout of the code
 

@@ -1,0 +1,86 @@
+# Release on a version tag: build, sign with Developer ID, notarize, publish the zip
+# to GitHub Releases, and point the Homebrew cask at it.
+#
+#   echo 0.2.0 > VERSION && git commit -am "0.2.0" && git tag v0.2.0 && git push --tags
+#
+# Repository secrets (Settings > Secrets and variables > Actions):
+#   DEVELOPER_ID_P12_BASE64   Developer ID Application certificate + key, .p12, base64
+#   DEVELOPER_ID_P12_PASSWORD the .p12 password
+#   APPLE_ID                  Apple ID that owns the team
+#   APPLE_TEAM_ID             10-character team id
+#   APPLE_APP_PASSWORD        app-specific password for notarytool (account.apple.com)
+#   TAP_GITHUB_TOKEN          fine-grained PAT with contents: write on homebrew-tap
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # build.sh uses the commit count as the build number
+
+      - name: Check the tag matches VERSION
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          if [[ "${GITHUB_REF_NAME}" != "v${version}" ]]; then
+            echo "tag ${GITHUB_REF_NAME} but VERSION is ${version}" >&2
+            exit 1
+          fi
+
+      - name: Import the Developer ID certificate
+        env:
+          P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/build.keychain-db"
+          password="$(openssl rand -hex 24)"
+          echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          rm "$RUNNER_TEMP/cert.p12"
+          security find-identity -v -p codesigning "$keychain"
+
+      - name: Store notarization credentials
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: xcrun notarytool store-credentials tile-notary --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
+
+      - name: Test
+        run: ./build.sh test
+
+      - name: Build, notarize, staple
+        run: ./build.sh release
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/Tile-*.zip dist/Tile-*.zip.sha256 --title "Tile $GITHUB_REF_NAME" --generate-notes
+
+      - name: Update the Homebrew cask
+        env:
+          GH_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          sha="$(cut -d' ' -f1 dist/Tile-"$version".zip.sha256)"
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/Epsilon-Limited-Solutions/homebrew-tap.git" "$RUNNER_TEMP/tap"
+          scripts/cask.sh "$version" "$sha" > "$RUNNER_TEMP/tap/Casks/tile.rb"
+          cd "$RUNNER_TEMP/tap"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/tile.rb
+          git commit -m "tile ${version}"
+          git push
