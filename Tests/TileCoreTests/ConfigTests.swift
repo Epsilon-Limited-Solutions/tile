@@ -10,15 +10,20 @@ struct ConfigTests {
     @Test func defaultConfigIsValid() throws {
         let config = try Fixtures.config(Config.defaultJSON)
         #expect(config.gaps == Gaps(outer: 0, inner: 0))
-        #expect(config.profiles.map(\.id) == ["laptop", "desk"])
+        #expect(config.profiles.map(\.id) == ["laptop"])
         #expect(config.layouts.count == 21)
         #expect(config.bindings.count == 26)
         #expect(config.arrangements.isEmpty)
         #expect(config.layout("left-third")?.shape
                 == .grid(columns: 3, rows: 1, cell: GridCell(column: 0, row: 0, columnSpan: 1, rowSpan: 1)))
         #expect(config.layout("center")?.shape == .center)
-        let desk = try #require(config.profiles.last)
-        #expect(desk.displays["vertical-left"] == DisplayMatcher(builtin: nil, name: "DELL S2722QC", serial: 810894658, rotation: nil))
+        #expect(config.profiles[0].displays == ["laptop": DisplayMatcher(builtin: true, name: nil, serial: nil, rotation: nil)])
+    }
+
+    @Test func profileWithSerialsParses() throws {
+        let config = try Fixtures.config(Fixtures.defaultsWithDesk)
+        #expect(config.profiles.map(\.id) == ["desk", "laptop"])
+        #expect(config.profiles[0].displays["vertical-left"] == DisplayMatcher(builtin: nil, name: "DELL S2722QC", serial: 810894658, rotation: nil))
     }
 
     @Test func emptyObjectIsAValidConfig() throws {

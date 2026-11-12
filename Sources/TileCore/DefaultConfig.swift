@@ -17,11 +17,7 @@ extension Config {
 
       "profiles": [
         { "id": "laptop", "displays": {
-            "laptop": { "builtin": true } } },
-        { "id": "desk", "displays": {
-            "laptop":         { "builtin": true },
-            "vertical-left":  { "name": "DELL S2722QC", "serial": 810894658 },
-            "vertical-right": { "name": "DELL S2722QC", "serial": 825446978 } } }
+            "laptop": { "builtin": true } } }
       ],
 
       "layouts": [

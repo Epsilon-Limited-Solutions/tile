@@ -6,7 +6,7 @@ struct ProfileTests {
     let profiles: [DisplayProfile]
 
     init() throws {
-        profiles = try Fixtures.config(Config.defaultJSON).profiles
+        profiles = try Fixtures.config(Fixtures.defaultsWithDesk).profiles
     }
 
     func renamed(_ display: DisplayInfo, _ name: String) -> DisplayInfo {
@@ -107,7 +107,7 @@ struct ProfileOverrideTests {
     let profiles: [DisplayProfile]
 
     init() throws {
-        profiles = try Fixtures.config(Config.defaultJSON).profiles
+        profiles = try Fixtures.config(Fixtures.defaultsWithDesk).profiles
     }
 
     @Test func overrideFitsWhenEveryRoleHasADisplay() {

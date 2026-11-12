@@ -299,4 +299,9 @@ A Developer ID build has a different signature from the Apple Development one. T
   - Spaces
   - the Arranger, Capture, the menu, and Settings (SwiftUI)
 - `Tests/TileCoreTests`: `swift test`
-- `PROMPT.md`: the original spec.
+
+## License
+
+Copyright © 2026 Epsilon Limited Solutions LLC.
+
+Tile is free software under the [GNU General Public License, version 3](LICENSE). You can use it, change it and share it, including at work. If you distribute a modified version, it has to ship under the same license with its source.

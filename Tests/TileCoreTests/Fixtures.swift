@@ -32,6 +32,16 @@ enum Fixtures {
 
     static let desk = [laptop, verticalLeft, verticalRight]
 
+    /// The default config plus a docked profile: the laptop and two identical Dells
+    /// in portrait, told apart by serial.
+    static let defaultsWithDesk = Config.defaultJSON.replacingOccurrences(of: #""profiles": ["#, with: #"""
+        "profiles": [
+            { "id": "desk", "displays": {
+                "laptop":         { "builtin": true },
+                "vertical-left":  { "name": "DELL S2722QC", "serial": 810894658 },
+                "vertical-right": { "name": "DELL S2722QC", "serial": 825446978 } } },
+        """#)
+
     static func config(_ json: String) throws -> Config {
         try Config.parse(Data(json.utf8))
     }
