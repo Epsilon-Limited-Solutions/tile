@@ -267,10 +267,10 @@ They're all in `Sources/Tile/Private/SkyLight.swift` and resolved with `dlsym`, 
 ## Install with Homebrew
 
 ```sh
-brew install --cask Epsilon-Limited-Solutions/tap/tile
+brew tap Epsilon-Limited-Solutions/tap && brew trust Epsilon-Limited-Solutions/tap && brew install --cask tile
 ```
 
-The cask lives in [Epsilon-Limited-Solutions/homebrew-tap](https://github.com/Epsilon-Limited-Solutions/homebrew-tap) and installs a Developer ID-signed, notarized build from this repo's GitHub Releases. `brew upgrade` picks up new releases.
+Homebrew 7 refuses casks from third-party taps until you trust the tap once, hence the middle command. The cask lives in [Epsilon-Limited-Solutions/homebrew-tap](https://github.com/Epsilon-Limited-Solutions/homebrew-tap) and installs a Developer ID-signed, notarized build from this repo's GitHub Releases. `brew upgrade` picks up new releases.
 
 ### Cutting a release
 
